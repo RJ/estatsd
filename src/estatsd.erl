@@ -8,14 +8,19 @@
 
 -define(SERVER, estatsd_server).
 
+% Convenience: just give it the now() tuple when the work started
+timing(Key, StartTime = {_,_,_}) ->
+    Dur = erlang:round(timer:now_diff(erlang:now(), StartTime)/1000),
+    timing(Key,Dur);
+
 % Log timing information, ms
 timing(Key, Duration) when is_integer(Duration) -> 
     gen_server:cast(?SERVER, {timing, Key, Duration});
 
-% Convenience: just give it the now() tuple when the work started
-timing(Key, StartTime = {_,_,_}) ->
-    Dur = erlang:round(timer:now_diff(erlang:now(), StartTime)/1000),
-    timing(Key,Dur).
+timing(Key, Duration) -> 
+    gen_server:cast(?SERVER, {timing, Key, erlang:round(Duration)}).
+
+
 
 
 % Increments one or more stats counters
