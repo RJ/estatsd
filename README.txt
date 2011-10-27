@@ -33,7 +33,7 @@ Counters
 
     estatsd:increment(num_foos).            %% increment num_foos by one
 
-    estatsd:decrement(<<"num_bars">>, 3).   %% increment num_bars by 3
+    estatsd:decrement(<<"num_bars">>, 3).   %% decrement num_bars by 3
 
     estatsd:increment("tcp.bytes_in", 512). %% increment tcp.bytes_in by 512
 
@@ -63,6 +63,7 @@ NOTES
 This could be extended to take a callback for reporting mechanisms.
 Right now it's hardcoded to stick data into graphite.
 
+I've been running this since May 2011 in production for irccloud.
 
 
 Richard Jones <rj@metabrew.com>
