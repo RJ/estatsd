@@ -53,13 +53,6 @@ Or for your convenience:
     do_sometask(), 
     estatsd:timing(sometast, Start).        %% uses now() and now_diff for you
 
-Sampling
---------
-
-Only report 10% of some_frequent_task measurements:
-
-    estatsd:timing(some_frequent_task, 12, 0.1) 
-
 
 
 NOTES
