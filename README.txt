@@ -28,6 +28,11 @@ application environment vars. See estatsd_sup for details.
 
 The following calls to estatsd are all gen_server:cast, ie non-blocking.
 
+Gauges
+--------
+
+    estatsd:gauge(temperature, 45).            %% set temperature to 45
+
 Counters
 --------
 

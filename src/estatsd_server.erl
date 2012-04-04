@@ -37,6 +37,7 @@ init([FlushIntervalMs, GraphiteHost, GraphitePort]) ->
     error_logger:info_msg("estatsd will flush stats to ~p:~w every ~wms\n", 
                           [ GraphiteHost, GraphitePort, FlushIntervalMs ]),
     ets:new(statsd, [named_table, set]),
+    ets:new(statsdgauge, [named_table, set]),
     %% Flush out stats to graphite periodically
     {ok, Tref} = timer:apply_interval(FlushIntervalMs, gen_server, cast, 
                                                        [?MODULE, flush]),
@@ -47,6 +48,16 @@ init([FlushIntervalMs, GraphiteHost, GraphitePort]) ->
                     graphite_port   = GraphitePort
                   },
     {ok, State}.
+
+handle_cast({gauge, Key, Value0}, State) ->
+    Value = {Value0, num2str(unixtime())},
+    case ets:lookup(statsdgauge, Key) of
+        [] ->
+            ets:insert(statsdgauge, {Key, [Value]});
+        [{Key, Values}] ->
+            ets:insert(statsdgauge, {Key, [Value | Values]})
+    end,
+    {noreply, State};
 
 handle_cast({increment, Key, Delta0, Sample}, State) when Sample >= 0, Sample =< 1 ->
     Delta = Delta0 * ( 1 / Sample ), %% account for sample rates < 1.0
@@ -69,9 +80,11 @@ handle_cast({timing, Key, Duration}, State) ->
 
 handle_cast(flush, State) ->
     All = ets:tab2list(statsd),
-    spawn( fun() -> do_report(All, State) end ),
+    Gauges = ets:tab2list(statsdgauge),
+    spawn( fun() -> do_report(All, Gauges, State) end ),
     %% WIPE ALL
     ets:delete_all_objects(statsd),
+    ets:delete_all_objects(statsdgauge),
     NewState = State#state{timers = gb_trees:empty()},
     {noreply, NewState}.
 
@@ -119,17 +132,19 @@ num2str(NN) -> lists:flatten(io_lib:format("~w",[NN])).
 unixtime()  -> {Meg,S,_Mic} = erlang:now(), Meg*1000000 + S.
 
 %% Aggregate the stats and generate a report to send to graphite
-do_report(All, State) ->
+do_report(All, Gauges, State) ->
     % One time stamp string used in all stats lines:
     TsStr = num2str(unixtime()),
     {MsgCounters, NumCounters} = do_report_counters(All, TsStr, State),
     {MsgTimers,   NumTimers}   = do_report_timers(TsStr, State),
+    {MsgGauges,   NumGauges}   = do_report_gauges(Gauges),
     %% REPORT TO GRAPHITE
-    case NumTimers + NumCounters of
+    case NumTimers + NumCounters + NumGauges of
         0 -> nothing_to_report;
         NumStats ->
             FinalMsg = [ MsgCounters,
                          MsgTimers,
+                         MsgGauges,
                          %% Also graph the number of graphs we're graphing:
                          "statsd.numStats ", num2str(NumStats), " ", TsStr, "\n"
                        ],
@@ -182,3 +197,23 @@ do_report_timers(TsStr, State) ->
                 [ Fragment | Acc ]
         end, [], Timings),
     {Msg, length(Msg)}.
+
+do_report_gauges(Gauges) ->
+    Msg = lists:foldl(
+        fun({Key, Vals}, Acc) ->
+            KeyS = key2str(Key),
+            Fragments = lists:foldl(
+                fun ({Val, TsStr}, KeyAcc) ->
+                    %% Build stats string for graphite
+                    Fragment = [
+                        "gauge.", KeyS, " ",
+                        io_lib:format("~w", [Val]), " ",
+                        TsStr, "\n"
+                    ],
+                    [ Fragment | KeyAcc ]
+                end, [], Vals
+            ),
+            [ Fragments | Acc ]
+        end, [], Gauges
+    ),
+    {Msg, length(Gauges)}.
