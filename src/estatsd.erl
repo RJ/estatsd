@@ -1,6 +1,7 @@
 -module(estatsd).
 
 -export([
+         gauge/2,
          increment/1, increment/2, increment/3,
          decrement/1, decrement/2, decrement/3,
          timing/2
@@ -34,3 +35,6 @@ decrement(Key, Amount) -> decrement(Key, Amount, 1).
 decrement(Key, Amount, Sample) ->
     increment(Key, 0 - Amount, Sample).
 
+% Sets a gauge value
+gauge(Key, Value) when is_number(Value) ->
+    gen_server:cast(?SERVER, {gauge, Key, Value}).
