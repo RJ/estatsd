@@ -28,6 +28,11 @@ application environment vars. See estatsd_sup for details.
 
 The following calls to estatsd are all gen_server:cast, ie non-blocking.
 
+Gauges
+--------
+
+    estatsd:gauge(temperature, 45).            %% set temperature to 45
+
 Counters
 --------
 
@@ -47,13 +52,6 @@ Or for your convenience:
     Start = erlang:now(),
     do_sometask(), 
     estatsd:timing(sometast, Start).        %% uses now() and now_diff for you
-
-Sampling
---------
-
-Only report 10% of some_frequent_task measurements:
-
-    estatsd:timing(some_frequent_task, 12, 0.1) 
 
 
 
