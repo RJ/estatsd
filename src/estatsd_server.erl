@@ -206,7 +206,7 @@ do_report_gauges(Gauges) ->
                 fun ({Val, TsStr}, KeyAcc) ->
                     %% Build stats string for graphite
                     Fragment = [
-                        "gauge.", KeyS, " ",
+                        "stats.gauges.", KeyS, " ",
                         io_lib:format("~w", [Val]), " ",
                         TsStr, "\n"
                     ],
