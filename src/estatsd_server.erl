@@ -11,7 +11,7 @@
 -module(estatsd_server).
 -behaviour(gen_server).
 
--export([start_link/3]).
+-export([start_link/4]).
 
 %-export([key2str/1,flush/0]). %% export for debugging 
 
@@ -22,18 +22,19 @@
                 flush_interval,     % ms interval between stats flushing
                 flush_timer,        % TRef of interval timer
                 graphite_host,      % graphite server host
-                graphite_port       % graphite server port
+                graphite_port,      % graphite server port
+				vm_metrics			% flag to enable sending VM metrics on flush
                }).
 
-start_link(FlushIntervalMs, GraphiteHost, GraphitePort) ->
+start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics) ->
     gen_server:start_link({local, ?MODULE}, 
                           ?MODULE, 
-                          [FlushIntervalMs, GraphiteHost, GraphitePort], 
+                          [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics], 
                           []).
 
 %%
 
-init([FlushIntervalMs, GraphiteHost, GraphitePort]) ->
+init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]) ->
     error_logger:info_msg("estatsd will flush stats to ~p:~w every ~wms\n", 
                           [ GraphiteHost, GraphitePort, FlushIntervalMs ]),
     ets:new(statsd, [named_table, set]),
@@ -45,7 +46,8 @@ init([FlushIntervalMs, GraphiteHost, GraphitePort]) ->
                     flush_interval  = FlushIntervalMs,
                     flush_timer     = Tref,
                     graphite_host   = GraphiteHost,
-                    graphite_port   = GraphitePort
+                    graphite_port   = GraphitePort,
+					vm_metrics		= VmMetrics
                   },
     {ok, State}.
 
@@ -135,16 +137,18 @@ unixtime()  -> {Meg,S,_Mic} = erlang:now(), Meg*1000000 + S.
 do_report(All, Gauges, State) ->
     % One time stamp string used in all stats lines:
     TsStr = num2str(unixtime()),
-    {MsgCounters, NumCounters} = do_report_counters(All, TsStr, State),
-    {MsgTimers,   NumTimers}   = do_report_timers(TsStr, State),
-    {MsgGauges,   NumGauges}   = do_report_gauges(Gauges),
+    {MsgCounters, NumCounters} 		= do_report_counters(All, TsStr, State),
+    {MsgTimers,   NumTimers}   		= do_report_timers(TsStr, State),
+    {MsgGauges,   NumGauges}   		= do_report_gauges(Gauges),
+	{MsgVmMetrics,   NumVmMetrics}  = do_report_vm_metrics(TsStr, State),
     %% REPORT TO GRAPHITE
-    case NumTimers + NumCounters + NumGauges of
+    case NumTimers + NumCounters + NumGauges + NumVmMetrics of
         0 -> nothing_to_report;
         NumStats ->
             FinalMsg = [ MsgCounters,
                          MsgTimers,
                          MsgGauges,
+						 MsgVmMetrics,
                          %% Also graph the number of graphs we're graphing:
                          "statsd.numStats ", num2str(NumStats), " ", TsStr, "\n"
                        ],
@@ -217,3 +221,40 @@ do_report_gauges(Gauges) ->
         end, [], Gauges
     ),
     {Msg, length(Gauges)}.
+
+do_report_vm_metrics(TsStr, State) ->
+	case State#state.vm_metrics of
+		true ->
+			{TotalReductions, Reductions} = erlang:statistics(reductions),
+			{NumberOfGCs, WordsReclaimed, _} = erlang:statistics(garbage_collection),
+			{{input, Input}, {output, Output}} = erlang:statistics(io),
+			RunQueue = erlang:statistics(run_queue),
+			StatsData = [
+						 {process_count, erlang:system_info(process_count)},
+						 {reductions, Reductions},
+						 {total_reductions, TotalReductions},
+						 {number_of_gcs, NumberOfGCs},
+						 {words_reclaimed, WordsReclaimed},
+						 {input, Input},
+						 {output, Output},
+						 {run_queue, RunQueue}
+						],			
+			StatsMsg = lists:map(fun({Key, Val}) ->
+				[
+				 "stats.vm.stats.", key2str(Key), " ",
+				 io_lib:format("~w", [Val]), " ",
+				 TsStr, "\n"
+				]
+			end, StatsData),
+			MemoryMsg = lists:map(fun({Key, Val}) ->
+				[
+				 "stats.vm.memory.", key2str(Key), " ",
+				 io_lib:format("~w", [Val]), " ",
+				 TsStr, "\n"
+				]
+			end, erlang:memory()),
+			Msg = StatsMsg ++ MemoryMsg;
+		false ->
+			Msg = []
+	end,
+    {Msg, length(Msg)}.
