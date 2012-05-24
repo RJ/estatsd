@@ -150,7 +150,7 @@ do_report(All, Gauges, State) ->
                          MsgGauges,
 						 MsgVmMetrics,
                          %% Also graph the number of graphs we're graphing:
-                         "statsd.numStats ", num2str(NumStats), " ", TsStr, "\n"
+                         "stats.num_stats ", num2str(NumStats), " ", TsStr, "\n"
                        ],
             send_to_graphite(FinalMsg, State)
     end.
@@ -165,7 +165,7 @@ do_report_counters(All, TsStr, State) ->
                                      io_lib:format("~w", [Val]), " ", 
                                      TsStr, "\n",
 
-                                     "stats_counts.", KeyS, " ", 
+                                     "counts.", KeyS, " ", 
                                      io_lib:format("~w",[NumVals]), " ", 
                                      TsStr, "\n"
                                    ],
