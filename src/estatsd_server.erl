@@ -23,7 +23,7 @@
                 flush_timer,        % TRef of interval timer
                 graphite_host,      % graphite server host
                 graphite_port,      % graphite server port
-				vm_metrics			% flag to enable sending VM metrics on flush
+                vm_metrics            % flag to enable sending VM metrics on flush
                }).
 
 start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics) ->
@@ -47,7 +47,7 @@ init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]) ->
                     flush_timer     = Tref,
                     graphite_host   = GraphiteHost,
                     graphite_port   = GraphitePort,
-					vm_metrics		= VmMetrics
+                    vm_metrics        = VmMetrics
                   },
     {ok, State}.
 
@@ -137,10 +137,10 @@ unixtime()  -> {Meg,S,_Mic} = erlang:now(), Meg*1000000 + S.
 do_report(All, Gauges, State) ->
     % One time stamp string used in all stats lines:
     TsStr = num2str(unixtime()),
-    {MsgCounters, NumCounters} 		= do_report_counters(All, TsStr, State),
-    {MsgTimers,   NumTimers}   		= do_report_timers(TsStr, State),
-    {MsgGauges,   NumGauges}   		= do_report_gauges(Gauges),
-	{MsgVmMetrics,   NumVmMetrics}  = do_report_vm_metrics(TsStr, State),
+    {MsgCounters, NumCounters}         = do_report_counters(All, TsStr, State),
+    {MsgTimers,   NumTimers}           = do_report_timers(TsStr, State),
+    {MsgGauges,   NumGauges}           = do_report_gauges(Gauges),
+    {MsgVmMetrics,   NumVmMetrics}  = do_report_vm_metrics(TsStr, State),
     %% REPORT TO GRAPHITE
     case NumTimers + NumCounters + NumGauges + NumVmMetrics of
         0 -> nothing_to_report;
@@ -148,7 +148,7 @@ do_report(All, Gauges, State) ->
             FinalMsg = [ MsgCounters,
                          MsgTimers,
                          MsgGauges,
-						 MsgVmMetrics,
+                         MsgVmMetrics,
                          %% Also graph the number of graphs we're graphing:
                          "stats.num_stats ", num2str(NumStats), " ", TsStr, "\n"
                        ],
@@ -223,46 +223,46 @@ do_report_gauges(Gauges) ->
     {Msg, length(Gauges)}.
 
 do_report_vm_metrics(TsStr, State) ->
-	case State#state.vm_metrics of
-		true ->
-			{TotalReductions, Reductions} = erlang:statistics(reductions),
-			{NumberOfGCs, WordsReclaimed, _} = erlang:statistics(garbage_collection),
-			{{input, Input}, {output, Output}} = erlang:statistics(io),
-			RunQueue = erlang:statistics(run_queue),
-			StatsData = [
-						 {process_count, erlang:system_info(process_count)},
-						 {reductions, Reductions},
-						 {total_reductions, TotalReductions},
-						 {number_of_gcs, NumberOfGCs},
-						 {words_reclaimed, WordsReclaimed},
-						 {input, Input},
-						 {output, Output},
-						 {run_queue, RunQueue}
-						],			
-			StatsMsg = lists:map(fun({Key, Val}) ->
-				[
-				 "stats.vm.", node_key(), ".stats.", key2str(Key), " ",
-				 io_lib:format("~w", [Val]), " ",
-				 TsStr, "\n"
-				]
-			end, StatsData),
-			MemoryMsg = lists:map(fun({Key, Val}) ->
-				[
-				 "stats.vm.", node_key(), ".memory.", key2str(Key), " ",
-				 io_lib:format("~w", [Val]), " ",
-				 TsStr, "\n"
-				]
-			end, erlang:memory()),
-			Msg = StatsMsg ++ MemoryMsg;
-		false ->
-			Msg = []
-	end,
+    case State#state.vm_metrics of
+        true ->
+            NodeKey = node_key(),
+            {TotalReductions, Reductions} = erlang:statistics(reductions),
+            {NumberOfGCs, WordsReclaimed, _} = erlang:statistics(garbage_collection),
+            {{input, Input}, {output, Output}} = erlang:statistics(io),
+            RunQueue = erlang:statistics(run_queue),
+            StatsData = [
+                         {process_count, erlang:system_info(process_count)},
+                         {reductions, Reductions},
+                         {total_reductions, TotalReductions},
+                         {number_of_gcs, NumberOfGCs},
+                         {words_reclaimed, WordsReclaimed},
+                         {input, Input},
+                         {output, Output},
+                         {run_queue, RunQueue}
+                        ],
+            StatsMsg = lists:map(fun({Key, Val}) ->
+                [
+                 "stats.vm.", NodeKey, ".stats.", key2str(Key), " ",
+                 io_lib:format("~w", [Val]), " ",
+                 TsStr, "\n"
+                ]
+            end, StatsData),
+            MemoryMsg = lists:map(fun({Key, Val}) ->
+                [
+                 "stats.vm.", NodeKey, ".memory.", key2str(Key), " ",
+                 io_lib:format("~w", [Val]), " ",
+                 TsStr, "\n"
+                ]
+            end, erlang:memory()),
+            Msg = StatsMsg ++ MemoryMsg;
+        false ->
+            Msg = []
+    end,
     {Msg, length(Msg)}.
 
 node_key() ->
-	NodeList = atom_to_list(node()),
-	{ok, R} = re:compile("[\@\.]"),
-	Opts = [global, {return, list}],
+    NodeList = atom_to_list(node()),
+    {ok, R} = re:compile("[\@\.]"),
+    Opts = [global, {return, list}],
     S = re:replace(NodeList,  R, "_", Opts),
     key2str(S).
-	
