@@ -161,11 +161,11 @@ do_report_counters(All, TsStr, State) ->
                         KeyS = key2str(Key),
                         Val = Val0 / (State#state.flush_interval/1000),
                         %% Build stats string for graphite
-                        Fragment = [ "stats.", KeyS, " ", 
+                        Fragment = [ "stats.counters.", KeyS, " ", 
                                      io_lib:format("~w", [Val]), " ", 
                                      TsStr, "\n",
 
-                                     "counts.", KeyS, " ", 
+                                     "stats.counters.counts.", KeyS, " ", 
                                      io_lib:format("~w",[NumVals]), " ", 
                                      TsStr, "\n"
                                    ],
