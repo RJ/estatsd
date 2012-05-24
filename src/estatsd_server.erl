@@ -241,14 +241,14 @@ do_report_vm_metrics(TsStr, State) ->
 						],			
 			StatsMsg = lists:map(fun({Key, Val}) ->
 				[
-				 "stats.vm.stats.", key2str(Key), " ",
+				 "stats.vm.", node_key(), ".stats.", key2str(Key), " ",
 				 io_lib:format("~w", [Val]), " ",
 				 TsStr, "\n"
 				]
 			end, StatsData),
 			MemoryMsg = lists:map(fun({Key, Val}) ->
 				[
-				 "stats.vm.memory.", key2str(Key), " ",
+				 "stats.vm.", node_key(), ".memory.", key2str(Key), " ",
 				 io_lib:format("~w", [Val]), " ",
 				 TsStr, "\n"
 				]
@@ -258,3 +258,11 @@ do_report_vm_metrics(TsStr, State) ->
 			Msg = []
 	end,
     {Msg, length(Msg)}.
+
+node_key() ->
+	NodeList = atom_to_list(node()),
+	{ok, R} = re:compile("[\@\.]"),
+	Opts = [global, {return, list}],
+    S = re:replace(NodeList,  R, "_", Opts),
+    key2str(S).
+	
