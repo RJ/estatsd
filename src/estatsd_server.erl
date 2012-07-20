@@ -18,12 +18,14 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
          terminate/2, code_change/3]).
 
--record(state, {timers,             % gb_tree of timer data
-                flush_interval,     % ms interval between stats flushing
+-record(state, {flush_interval,     % ms interval between stats flushing
                 flush_timer,        % TRef of interval timer
                 graphite_host,      % graphite server host
                 graphite_port,      % graphite server port
-                vm_metrics            % flag to enable sending VM metrics on flush
+                vm_metrics,         % flag to enable sending VM metrics on flush
+                stats_tables,
+                gauge_tables,
+                timer_tables
                }).
 
 start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics) ->
@@ -37,57 +39,58 @@ start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics) ->
 init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]) ->
     error_logger:info_msg("estatsd will flush stats to ~p:~w every ~wms\n", 
                           [ GraphiteHost, GraphitePort, FlushIntervalMs ]),
-    ets:new(statsd, [named_table, set]),
-    ets:new(statsdgauge, [named_table, set]),
-    %% Flush out stats to graphite periodically
+
+    % 1. Create a table to hold the current table to use.
+    ets:new(statsd, [named_table, set, public, {read_concurrency, true}]),
+
+    % 2. Create two tables each for gauges and counters; double-buffer mentality :)
+    TidStatsA   = ets:new(statsd_counters_a, [set, public, {write_concurrency, true}]),
+    TidStatsB   = ets:new(statsd_counters_b, [set, public, {write_concurrency, true}]),
+    TidGaugeA   = ets:new(statsd_gauge_a, [duplicate_bag, public, {write_concurrency, true}]),
+    TidGaugeB   = ets:new(statsd_gauge_b, [duplicate_bag, public, {write_concurrency, true}]),
+    TidTimerA   = ets:new(statsd_timer_a, [duplicate_bag, public, {write_concurrency, true}]),
+    TidTimerB   = ets:new(statsd_timer_b, [duplicate_bag, public, {write_concurrency, true}]),
+
+    % 3. Indicate which tables are currently our "write" buffers
+    ets:insert(statsd, {stats, TidStatsA}),
+    ets:insert(statsd, {gauge, TidGaugeA}),
+    ets:insert(statsd, {timer, TidTimerA}),
+
+    % 4. Set a timer to flush stats
     {ok, Tref} = timer:apply_interval(FlushIntervalMs, gen_server, cast, 
                                                        [?MODULE, flush]),
-    State = #state{ timers          = gb_trees:empty(),
-                    flush_interval  = FlushIntervalMs,
-                    flush_timer     = Tref,
-                    graphite_host   = GraphiteHost,
-                    graphite_port   = GraphitePort,
-                    vm_metrics        = VmMetrics
-                  },
+    State = #state{ 
+        flush_interval  = FlushIntervalMs,
+        flush_timer     = Tref,
+        graphite_host   = GraphiteHost,
+        graphite_port   = GraphitePort,
+        vm_metrics      = VmMetrics,
+        stats_tables    = {TidStatsA, TidStatsB},
+        gauge_tables    = {TidGaugeA, TidGaugeB},
+        timer_tables    = {TidTimerA, TidTimerB}
+    },
     {ok, State}.
 
-handle_cast({gauge, Key, Value0}, State) ->
-    Value = {Value0, num2str(unixtime())},
-    case ets:lookup(statsdgauge, Key) of
-        [] ->
-            ets:insert(statsdgauge, {Key, [Value]});
-        [{Key, Values}] ->
-            ets:insert(statsdgauge, {Key, [Value | Values]})
-    end,
-    {noreply, State};
+handle_cast(flush, State = #state{stats_tables = {CurrentStats, NewStats}, gauge_tables = {CurrentGauge, NewGauge}, timer_tables = {CurrentTimer, NewTimer}}) ->
+    % 1. Flip tables externally
+    ets:insert(statsd, [{stats, NewStats}, {gauge, NewGauge}, {timer, NewTimer}]),
+    timer:sleep(500),    % Sleep to let any pending operations on the ets table complete.
 
-handle_cast({increment, Key, Delta0, Sample}, State) when Sample >= 0, Sample =< 1 ->
-    Delta = Delta0 * ( 1 / Sample ), %% account for sample rates < 1.0
-    case ets:lookup(statsd, Key) of
-        [] ->
-            ets:insert(statsd, {Key, {Delta,1}});
-        [{Key,{Tot,Times}}] ->
-            ets:insert(statsd, {Key,{Tot+Delta, Times+1}}),
-            ok
-    end,
-    {noreply, State};
+    % 2. Gather data
+    All     = ets:tab2list(CurrentStats),
+    Gauges  = accumulate(ets:tab2list(CurrentGauge)),       % Gauges and timers are duplicate_bag tables; we need to consolidate
+    Timers  = accumulate(ets:tab2list(CurrentTimer)),       % the objects the contain
 
-handle_cast({timing, Key, Duration}, State) ->
-    case gb_trees:lookup(Key, State#state.timers) of
-        none ->
-            {noreply, State#state{timers = gb_trees:insert(Key, [Duration], State#state.timers)}};
-        {value, Val} ->
-            {noreply, State#state{timers = gb_trees:update(Key, [Duration|Val], State#state.timers)}}
-    end;
+    % 3. Do reports
+    spawn(fun() -> do_report(All, Gauges, Timers, State) end),
 
-handle_cast(flush, State) ->
-    All = ets:tab2list(statsd),
-    Gauges = ets:tab2list(statsdgauge),
-    spawn( fun() -> do_report(All, Gauges, State) end ),
-    %% WIPE ALL
-    ets:delete_all_objects(statsd),
-    ets:delete_all_objects(statsdgauge),
-    NewState = State#state{timers = gb_trees:empty()},
+    % 4. Clear our back-buffers
+    ets:delete_all_objects(CurrentStats),
+    ets:delete_all_objects(CurrentGauge),
+    ets:delete_all_objects(CurrentTimer),
+
+    % 5. Update state to flip tables internally
+    NewState = State#state{stats_tables = {NewStats, CurrentStats}, gauge_tables = {NewGauge, CurrentGauge}, timer_tables = {NewTimer, CurrentTimer}},
     {noreply, NewState}.
 
 handle_call(_,_,State)      -> {reply, ok, State}.
@@ -99,6 +102,16 @@ code_change(_, _, State)    -> {noreply, State}.
 terminate(_, _)             -> ok.
 
 %% INTERNAL STUFF
+accumulate(List) ->
+    lists:foldl(fun do_accumulate/2, [], List).
+
+do_accumulate({Key, Value}, L) ->
+    case lists:keyfind(Key, 1, L) of
+        false -> 
+            [{Key, [Value]}|L];
+        {Key, Values} ->
+            lists:keystore(Key, 1, L, {Key, [Value|Values]})
+    end.
 
 send_to_graphite(Msg, State) ->
     % io:format("SENDING: ~s\n", [Msg]),
@@ -110,7 +123,7 @@ send_to_graphite(Msg, State) ->
             gen_tcp:close(Sock),
             ok;
         E ->
-            %error_logger:error_msg("Failed to connect to graphite: ~p", [E]),
+            error_logger:error_msg("Failed to connect to graphite: ~p", [E]),
             E
     end.
 
@@ -134,13 +147,13 @@ num2str(NN) -> lists:flatten(io_lib:format("~w",[NN])).
 unixtime()  -> {Meg,S,_Mic} = erlang:now(), Meg*1000000 + S.
 
 %% Aggregate the stats and generate a report to send to graphite
-do_report(All, Gauges, State) ->
+do_report(All, Gauges, Timers, State) ->
     % One time stamp string used in all stats lines:
     TsStr = num2str(unixtime()),
-    {MsgCounters, NumCounters}         = do_report_counters(All, TsStr, State),
-    {MsgTimers,   NumTimers}           = do_report_timers(TsStr, State),
-    {MsgGauges,   NumGauges}           = do_report_gauges(Gauges),
-    {MsgVmMetrics,   NumVmMetrics}  = do_report_vm_metrics(TsStr, State),
+    {MsgCounters, NumCounters}          = do_report_counters(TsStr, All, State),
+    {MsgTimers, NumTimers}              = do_report_timers(TsStr, Timers, State),
+    {MsgGauges, NumGauges}              = do_report_gauges(Gauges),
+    {MsgVmMetrics, NumVmMetrics}        = do_report_vm_metrics(TsStr, State),
     %% REPORT TO GRAPHITE
     case NumTimers + NumCounters + NumGauges + NumVmMetrics of
         0 -> nothing_to_report;
@@ -155,9 +168,9 @@ do_report(All, Gauges, State) ->
             send_to_graphite(FinalMsg, State)
     end.
 
-do_report_counters(All, TsStr, State) ->
+do_report_counters(TsStr, All, State) ->
     Msg = lists:foldl(
-                fun({Key, {Val0,NumVals}}, Acc) ->
+                fun({Key, Val0}, Acc) ->
                         KeyS = key2str(Key),
                         Val = Val0 / (State#state.flush_interval/1000),
                         %% Build stats string for graphite
@@ -166,15 +179,14 @@ do_report_counters(All, TsStr, State) ->
                                      TsStr, "\n",
 
                                      "stats.counters.counts.", KeyS, " ", 
-                                     io_lib:format("~w",[NumVals]), " ", 
+                                     io_lib:format("~w",[Val0]), " ", 
                                      TsStr, "\n"
                                    ],
                         [ Fragment | Acc ]                    
                 end, [], All),
     {Msg, length(All)}.
 
-do_report_timers(TsStr, State) ->
-    Timings = gb_trees:to_list(State#state.timers),
+do_report_timers(TsStr, Timings, State) ->
     Msg = lists:foldl(
         fun({Key, Vals}, Acc) ->
                 KeyS = key2str(Key),
