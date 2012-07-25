@@ -93,21 +93,30 @@ handle_cast(flush, State = #state{stats_tables = {CurrentStats, NewStats}, gauge
     % 1. Flip tables externally
     ets:insert(statsd, [{stats, NewStats}, {gauge, NewGauge}, {timer, NewTimer}]),
 
-    % 2. Gather data
+    % 2. Sleep for a little bit to allow pending operations to finish
+    timer:sleep(100),
+
+    % 3. Gather data
     All     = ets:tab2list(CurrentStats),
     Gauges  = accumulate(ets:tab2list(CurrentGauge)),       % Gauges and timers are duplicate_bag tables; we need to consolidate
     Timers  = accumulate(ets:tab2list(CurrentTimer)),       % the objects the contain
 
-    % 3. Do reports
-    do_report(All, Gauges, Timers, State),
+    % 4. Do reports
+    CurrTime = os:timestamp(),
+    do_report(All, Gauges, Timers, CurrTime, State),
 
-    % 4. Clear our back-buffers
+    % 5. Clear our back-buffers
     ets:delete_all_objects(CurrentStats),
     ets:delete_all_objects(CurrentGauge),
     ets:delete_all_objects(CurrentTimer),
 
-    % 5. Update state to flip tables internally
-    NewState = State#state{stats_tables = {NewStats, CurrentStats}, gauge_tables = {NewGauge, CurrentGauge}, timer_tables = {NewTimer, CurrentTimer}},
+    % 6. Update state to flip tables internally
+    NewState = State#state{
+        last_flush      = CurrTime,                     % Also, update the last flush so our calculations are, you know, accurate.
+        stats_tables    = {NewStats, CurrentStats}, 
+        gauge_tables    = {NewGauge, CurrentGauge}, 
+        timer_tables    = {NewTimer, CurrentTimer}
+    },
     {noreply, NewState}.
 
 handle_call(_,_,State)      -> {reply, ok, State}.
@@ -163,7 +172,7 @@ num2str(NN) -> lists:flatten(io_lib:format("~w",[NN])).
 unixtime({M, S, _}) -> (M * 1000000) + S.
 
 %% Aggregate the stats and generate a report to send to graphite
-do_report(All, Gauges, Timers, State = #state{is_master = false, master_node = MasterNode}) ->
+do_report(All, Gauges, Timers, CurrTime, State = #state{is_master = false, master_node = MasterNode}) ->
     case net_adm:ping(MasterNode) of
         pong ->
             spawn(MasterNode, estatsd, aggregate, [All, Gauges, Timers]);
@@ -173,14 +182,13 @@ do_report(All, Gauges, Timers, State = #state{is_master = false, master_node = M
     end,
     case State#state.vm_metrics of
         true ->
-            do_report([], [], [], State#state{is_master = true});
+            do_report([], [], [], CurrTime, State#state{is_master = true});
         _ ->
             ok
     end;
 
-do_report(All, Gauges, Timers, State) ->
+do_report(All, Gauges, Timers, CurrTime, State) ->
     % One time stamp string used in all stats lines:
-    CurrTime                        = os:timestamp(),
     Duration                        = timer:now_diff(CurrTime, State#state.last_flush) / 1000000,
     TsStr                           = num2str(unixtime(CurrTime)),
     {MsgCounters, NumCounters}      = do_report_counters(TsStr, All, Duration),
@@ -198,7 +206,6 @@ do_report(All, Gauges, Timers, State) ->
                          %% Also graph the number of graphs we're graphing:
                          "stats.num_stats ", num2str(NumStats), " ", TsStr, "\n"
                        ],
-            error_logger:info_msg("Reporting to graphite: ~n~s~n~n", [FinalMsg]),
             send_to_graphite(FinalMsg, State)
     end.
 
@@ -233,7 +240,7 @@ do_report_timers(TsStr, Timings) ->
                 NumInThreshold  = Count - ThresholdIndex,
                 Values1         = lists:sublist(Values, NumInThreshold),
                 MaxAtThreshold  = lists:nth(NumInThreshold, Values),
-                Mean            = lists:sum(Values1) / NumInThreshold,
+                Mean            = lists:sum(Values1) / case NumInThreshold of 0 -> 1; _ -> NumInThreshold end,
                 %% Build stats string for graphite
                 Startl          = [ "stats.timers.", KeyS, "." ],
                 Endl            = [" ", TsStr, "\n"],

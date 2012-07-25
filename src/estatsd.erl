@@ -23,11 +23,14 @@ aggregate(Counters, Gauges, Timers) ->
     TimerTid = get_table(timer),
 
     % 2. Add the list of each to their respective tables
-    ets:insert(GaugeTid, Gauges),
-    ets:insert(TimerTid, Timers),
+    spawn(fun() -> [ break_aggregate(GaugeTid, Gauge) || Gauge <- Gauges ] end),
+    spawn(fun() -> [ break_aggregate(TimerTid, Timer) || Timer <- Timers ] end),
 
     % 3. Increment all the passed counter keys by the supplied amounts
-    [ increment(Key, Val, 1) || {Key, Val} <- Counters ].
+    spawn(fun() -> [ increment(Key, Val, 1) || {Key, Val} <- Counters ] end).
+
+break_aggregate(Tid, {K, L}) ->
+    ets:insert(Tid, [ {K, V} || V <- L]).
     
 timing(Key, StartTime = {_,_,_}) ->
     Dur = erlang:round(timer:now_diff(os:timestamp(), StartTime)/1000),
