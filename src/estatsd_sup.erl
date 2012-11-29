@@ -45,7 +45,15 @@ init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, MasterNode]) ->
         {estatsd_server, 
          {estatsd_server, start_link, 
              [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, MasterNode]},
-         permanent, 5000, worker, [estatsd_server]}
+         permanent, 5000, worker, [estatsd_server]},
+        {
+            estatsd_listener,
+            {estatsd_listener, start_link, []},
+            permanent,
+            5000,
+            worker,
+            [estatsd_listener]
+        }
     ],
     {ok, { {one_for_one, 10000, 10}, Children} }.
 

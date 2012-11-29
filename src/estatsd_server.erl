@@ -149,7 +149,7 @@ send_to_graphite(Msg, State) ->
             gen_tcp:close(Sock),
             ok;
         E ->
-            error_logger:error_msg("Failed to connect to graphite: ~p", [E]),
+%            error_logger:error_msg("Failed to connect to graphite: ~p", [E]),
             E
     end.
 
