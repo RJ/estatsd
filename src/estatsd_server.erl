@@ -9,47 +9,54 @@
 %% Richard Jones <rj@metabrew.com>
 %%
 -module(estatsd_server).
--behaviour(gen_server).
+-behaviour(gen_leader).
+-compile([{parse_transform, ct_expand}]).
+-export([start_link/0]).
+-include("estatsd.hrl").
 
--export([start_link/5]).
+-export([node_key/0,key2str/1]).%,flush/0]). %% export for debugging 
 
-%-export([key2str/1,flush/0]). %% export for debugging 
+-export([init/1, handle_call/4, handle_cast/3, handle_info/2,
+         handle_leader_call/4, handle_leader_cast/3, handle_DOWN/3,
+         elected/3, surrendered/3, from_leader/3, terminate/2,
+         code_change/4]).
 
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
-         terminate/2, code_change/3]).
+-record(state, {
+        flush_interval      = 10000,            % ms interval between stats flushing
+        last_flush          = os:timestamp(),   % erlang-style timestamp of last flush (or start time)
+        flush_timer         = undefined,        % TRef of interval timer
+        destination         = undefined,        % What to do every flush interval
+        is_leader           = false,
+        aggregate           = [],
+        vm_metrics          = true,             % flag to enable sending VM metrics on flush
+        stats_tables        = undefined,        % Evantually a tuple with two Tids for stats
+        gauge_tables        = undefined,        % Eventually a tuple with two Tids for gauges
+        timer_tables        = undefined         % Eventually a tuple with two Tids for timers
+    }).
 
--record(state, {flush_interval      = 10000,            % ms interval between stats flushing
-                last_flush          = os:timestamp(),   % erlang-style timestamp of last flush (or start time)
-                flush_timer         = undefined,        % TRef of interval timer
-                is_master           = false,
-                master_node         = undefined,        % Master erlang node; forward stats to this node instead of graphite.
-                graphite_host       = "127.0.0.1",      % graphite server host
-                graphite_port       = 2003,             % graphite server port
-                vm_metrics          = true,             % flag to enable sending VM metrics on flush
-                stats_tables        = undefined,        % Evantually a tuple with two Tids for stats
-                gauge_tables        = undefined,        % Eventually a tuple with two Tids for gauges
-                timer_tables        = undefined         % Eventually a tuple with two Tids for timers
-               }).
-
-start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, MasterNode) ->
-    gen_server:start_link({local, ?MODULE}, 
-                          ?MODULE, 
-                          [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, MasterNode], 
-                          []).
+start_link() ->
+    Nodes = case application:get_env(estatsd, peers) of
+        undefined -> [node()];
+        {ok, Peers} -> Peers
+    end,
+    gen_leader:start_link(?MODULE, Nodes, [], ?MODULE, [], []).
 
 %%
 
-init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, MasterNode]) ->
-    error_logger:info_msg("estatsd will flush stats to ~p:~w every ~wms\n", 
-                          [ GraphiteHost, GraphitePort, FlushIntervalMs ]),
+init([]) ->
+    % 1. Initialize our state.
+    State = #state{flush_interval = FlushInterval} = init_state(),
 
-    % 1. Create a table to hold the current table to use. Optimize for read operations,
+    % 2. Create a table to hold the current table to use. Optimize for read operations,
     % as we'll only be writing once every FlushIntervalMs
     ets:new(statsd, [named_table, set, public, {read_concurrency, true}]),
 
-    % 2. Create two tables each for gauges and counters; double-buffer mentality :)
+    % 3. Create two tables each for gauges and counters; double-buffer mentality :)
     % Use duplicate bags to accomodate multiple entries for each key in gauge and timer tables
     % Optimize for write operations
+    ets:new(statsd_counters_agg, [named_table, set, public, {write_concurrency, true}]),
+    ets:new(statsd_gauge_agg, [named_table, set, public, {write_concurrency, true}]),
+    ets:new(statsd_timer_agg, [named_table, duplicate_bag, public, {write_concurrency, true}]),
     TidStatsA   = ets:new(statsd_counters_a, [set, public, {write_concurrency, true}]),
     TidStatsB   = ets:new(statsd_counters_b, [set, public, {write_concurrency, true}]),
     TidGaugeA   = ets:new(statsd_gauge_a, [duplicate_bag, public, {write_concurrency, true}]),
@@ -57,39 +64,50 @@ init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, MasterNode]) ->
     TidTimerA   = ets:new(statsd_timer_a, [duplicate_bag, public, {write_concurrency, true}]),
     TidTimerB   = ets:new(statsd_timer_b, [duplicate_bag, public, {write_concurrency, true}]),
 
-    % 3. Indicate which tables are currently our "write" buffers
+    % 4. Indicate which tables are currently our "write" buffers
     ets:insert(statsd, {stats, TidStatsA}),
     ets:insert(statsd, {gauge, TidGaugeA}),
     ets:insert(statsd, {timer, TidTimerA}),
 
-    % 4. Set a timer to flush stats
-    {ok, Tref} = timer:apply_interval(FlushIntervalMs, gen_server, cast, 
-                                                       [?MODULE, flush]),
+    % 5. Set a timer to flush stats
+    {ok, Tref} = timer:apply_interval(FlushInterval, gen_leader, cast, [?MODULE, flush]),
 
-    % 5. Pre-compile some regular expressions necessary to clean up key names
-    {ok, RxWs}      = re:compile("\\s+"),
-    {ok, RxFs}      = re:compile("/"),
-    {ok, RxIllegal} = re:compile("[^a-zA-Z_\\-0-9\\.]"),
+    {ok, State#state{
+            flush_timer     = Tref,
+            stats_tables    = {TidStatsA, TidStatsB},   % See? I told you they'd be tuples with two Tids
+            gauge_tables    = {TidGaugeA, TidGaugeB},
+            timer_tables    = {TidTimerA, TidTimerB}
+        }}.
 
-    % 6. Store those regular expressions in *shudder* the process dictionary
-    put(regex, {RxWs, RxFs, RxIllegal}),
+appvar(K, Def) ->
+    case application:get_env(estatsd, K) of
+        {ok, Val} -> Val;
+        undefined -> Def
+    end.
 
-    % 7. Prep our state struct and leave the init function.
-    State = #state{ 
-        flush_interval  = FlushIntervalMs,
-        flush_timer     = Tref,
-        is_master       = MasterNode =:= node() orelse MasterNode =:= undefined,
-        master_node     = MasterNode,
-        graphite_host   = GraphiteHost,
-        graphite_port   = GraphitePort,
-        vm_metrics      = VmMetrics,
-        stats_tables    = {TidStatsA, TidStatsB},   % See? I told you they'd be tuples with two Tids
-        gauge_tables    = {TidGaugeA, TidGaugeB},
-        timer_tables    = {TidTimerA, TidTimerB}
-    },
-    {ok, State}.
+init_state() ->
+    #state{ 
+        flush_interval  = appvar(flush_interval, 10000),
+        destination     = appvar(destination,  {graphite, "127.0.0.1", 2003}),
+        vm_metrics      = appvar(vm_metrics,  true)
+    }.
 
-handle_cast(flush, State = #state{stats_tables = {CurrentStats, NewStats}, gauge_tables = {CurrentGauge, NewGauge}, timer_tables = {CurrentTimer, NewTimer}}) ->
+elected(State, _Election, undefined) ->
+    Synch = [],
+    {ok, Synch, State#state{is_leader = true}};
+elected(State, _Election, _Node) ->
+    {reply, [], State}.
+
+surrendered(State = #state{aggregate = VMs}, _Sync, _Election) ->
+    Counters    = ets:tab2list(statsd_counters_agg),
+    Gauges      = ets:tab2list(statsd_gauge_agg),
+    Timers      = ets:tab2list(statsd_timer_agg),
+
+    estatsd:aggregate(Counters, Gauges, Timers, VMs),
+
+    {ok, State#state{is_leader = false, aggregate = []}}.
+
+handle_cast(flush, State = #state{is_leader = IsLeader, aggregate = Aggregate, stats_tables = {CurrentStats, NewStats}, gauge_tables = {CurrentGauge, NewGauge}, timer_tables = {CurrentTimer, NewTimer}}, _Election) ->
     % 1. Flip tables externally
     ets:insert(statsd, [{stats, NewStats}, {gauge, NewGauge}, {timer, NewTimer}]),
 
@@ -97,13 +115,14 @@ handle_cast(flush, State = #state{stats_tables = {CurrentStats, NewStats}, gauge
     timer:sleep(100),
 
     % 3. Gather data
-    All     = ets:tab2list(CurrentStats),
-    Gauges  = accumulate(ets:tab2list(CurrentGauge)),       % Gauges and timers are duplicate_bag tables; we need to consolidate
-    Timers  = accumulate(ets:tab2list(CurrentTimer)),       % the objects the contain
+    All     = get_counters(CurrentStats, IsLeader),
+    Gauges  = get_gauges(CurrentGauge, IsLeader),
+    Timers  = get_timers(CurrentTimer, IsLeader), % Timers are a duplicate bag
+    VM      = get_vm_metrics(Aggregate, IsLeader),
 
     % 4. Do reports
     CurrTime = os:timestamp(),
-    do_report(All, Gauges, Timers, CurrTime, State),
+    do_report(All, Timers, Gauges, VM, CurrTime, State),
 
     % 5. Clear our back-buffers
     ets:delete_all_objects(CurrentStats),
@@ -113,21 +132,101 @@ handle_cast(flush, State = #state{stats_tables = {CurrentStats, NewStats}, gauge
     % 6. Update state to flip tables internally
     NewState = State#state{
         last_flush      = CurrTime,                     % Also, update the last flush so our calculations are, you know, accurate.
+        aggregate       = [],
         stats_tables    = {NewStats, CurrentStats}, 
         gauge_tables    = {NewGauge, CurrentGauge}, 
         timer_tables    = {NewTimer, CurrentTimer}
     },
     {noreply, NewState}.
 
-handle_call(_,_,State)      -> {reply, ok, State}.
+handle_leader_cast({aggregate, Counters, Timers, Gauges, VMs}, State = #state{aggregate = Aggregate}, _Election) ->
+    lists:foreach(fun({K, V}) -> estatsd_utils:ets_incr(statsd_counters_agg, K, V) end, Counters),
+    lists:foreach(fun(Gauge) -> ets:insert(statsd_gauge_agg, Gauge) end, Gauges),
+    CurrentTimers = ets:tab2list(statsd_timer_agg),
+    UpdatedTimers = lists:foldl(fun merge_timers/2, CurrentTimers, Timers),
+    lists:foreach(fun(Timer) -> ets:insert(statsd_timer_agg, Timer) end, UpdatedTimers),
+    {noreply, State#state{aggregate = Aggregate ++ VMs}};
+handle_leader_cast(Cast, State, _Election) ->
+    {noreply, State}.
 
-handle_info(_Msg, State)    -> {noreply, State}.
+handle_call(Call,_,State, _Election) -> 
+    {reply, ok, State}.
 
-code_change(_, _, State)    -> {noreply, State}.
+handle_leader_call(Call, _From, State, _Election) ->
+    {reply, ok, State}.
 
-terminate(_, _)             -> ok.
+handle_info(Msg, State) -> 
+    {noreply, State}.
+
+handle_DOWN(_Node, State, _Election) ->
+    {ok, State}.
+
+from_leader(_Synch, State, _Election) ->
+    {ok, State}.
+
+code_change(_, _, State, _Election) -> 
+    {noreply, State}.
+
+terminate(_, _) -> 
+    ok.
 
 %% INTERNAL STUFF
+get_counters(Tid, false) ->
+    ets:tab2list(Tid);
+get_counters(Tid, true) ->
+    LocalCounters = ets:tab2list(Tid),
+    lists:foreach(fun({K, V}) -> estatsd_utils:ets_incr(statsd_counters_agg, K, V) end, LocalCounters),
+    Counters = ets:tab2list(statsd_counters_agg),
+    ets:delete_all_objects(statsd_counters_agg),
+    Counters.
+
+get_timers(Tid, false) ->
+    accumulate(ets:tab2list(Tid));
+get_timers(Tid, true) ->
+    LocalTimers = accumulate(ets:tab2list(Tid)),
+    Timers = ets:tab2list(statsd_timer_agg),
+    ets:delete_all_objects(statsd_timer_agg),
+    lists:foldl(fun merge_timers/2, Timers, LocalTimers).
+    
+merge_timers({K, Values}, Acc) ->
+    case lists:keyfind(K, 1, Acc) of
+        false -> [{K, Values}|Acc];
+        {K, OldValues} -> lists:keystore(K, 1, Acc, {K, OldValues ++ Values})
+    end.
+
+get_gauges(Tid, false) ->
+    accumulate(ets:tab2list(Tid));
+get_gauges(Tid, true) ->
+    LocalGauges = ets:tab2list(Tid),
+    lists:foreach(fun(Gauge) -> ets:insert(statsd_gauge_agg, Gauge) end, LocalGauges),
+    Gauges = accumulate(ets:tab2list(statsd_gauge_agg)),
+    ets:delete_all_objects(statsd_gauge_agg),
+    Gauges.
+
+get_vm_metrics(_Aggregate, false) ->
+    [{node_key(), get_local_metrics()}];
+get_vm_metrics(Aggregate, true) ->
+    LocalMetrics = get_local_metrics(),
+    [{node_key(), LocalMetrics}|Aggregate].
+
+get_local_metrics() ->
+    {TotalReductions, Reductions} = erlang:statistics(reductions),
+    {NumberOfGCs, WordsReclaimed, _} = erlang:statistics(garbage_collection),
+    {{input, Input}, {output, Output}} = erlang:statistics(io),
+    RunQueue = erlang:statistics(run_queue),
+    StatsData = [
+                 {process_count, erlang:system_info(process_count)},
+                 {reductions, Reductions},
+                 {total_reductions, TotalReductions},
+                 {number_of_gcs, NumberOfGCs},
+                 {words_reclaimed, WordsReclaimed},
+                 {input, Input},
+                 {output, Output},
+                 {run_queue, RunQueue}
+                ],
+    MemoryData = erlang:memory(),
+    {StatsData, MemoryData}.
+
 accumulate(List) ->
     lists:foldl(fun do_accumulate/2, [], List).
 
@@ -139,11 +238,8 @@ do_accumulate({Key, Value}, L) ->
             lists:keystore(Key, 1, L, {Key, [Value|Values]})
     end.
 
-send_to_graphite(Msg, State) ->
-    % io:format("SENDING: ~s\n", [Msg]),
-    case gen_tcp:connect(State#state.graphite_host,
-                         State#state.graphite_port,
-                         [list, {packet, 0}]) of
+send_to_graphite(Msg, GraphiteHost, GraphitePort) ->
+    case gen_tcp:connect(GraphiteHost, GraphitePort, [list, {packet, 0}]) of
         {ok, Sock} ->
             gen_tcp:send(Sock, Msg),
             gen_tcp:close(Sock),
@@ -159,55 +255,40 @@ key2str(K) when is_atom(K) ->
 key2str(K) when is_binary(K) -> 
     key2str(binary_to_list(K));
 key2str(K) when is_list(K) ->
-    {R1, R2, R3} = get(regex),
     Opts = [global, {return, list}],
     lists:foldl(fun({Rx, Replace}, S) -> re:replace(S, Rx, Replace, Opts) end, K, [
-            {R1, "_"},
-            {R2, "-"},
-            {R3, ""}
+            {?COMPILE_ONCE("\\s+"), "_"},
+            {?COMPILE_ONCE("/"), "-"},
+            {?COMPILE_ONCE("[^a-zA-Z_\\-0-9\\.]"), ""}
         ]).
 
-num2str(NN) -> lists:flatten(io_lib:format("~w",[NN])).
-
-unixtime({M, S, _}) -> (M * 1000000) + S.
-
-%% Aggregate the stats and generate a report to send to graphite
-do_report(All, Gauges, Timers, CurrTime, State = #state{is_master = false, master_node = MasterNode}) ->
-    case net_adm:ping(MasterNode) of
-        pong ->
-            spawn(MasterNode, estatsd, aggregate, [All, Gauges, Timers]);
-        _ ->
-            error_logger:error_msg("Master Node (~p) is unresponsive; lost data.", [MasterNode]),
-            ok
-    end,
-    case State#state.vm_metrics of
-        true ->
-            do_report([], [], [], CurrTime, State#state{is_master = true});
-        _ ->
-            ok
-    end;
-
-do_report(All, Gauges, Timers, CurrTime, State) ->
+do_report(All, Timers, Gauges, VM, CurrTime, State = #state{destination = {graphite, GraphiteHost, GraphitePort}}) ->
     % One time stamp string used in all stats lines:
     Duration                        = timer:now_diff(CurrTime, State#state.last_flush) / 1000000,
-    TsStr                           = num2str(unixtime(CurrTime)),
+    TsStr                           = estatsd_utils:num_to_str(estatsd_utils:unixtime(CurrTime)),
     {MsgCounters, NumCounters}      = do_report_counters(TsStr, All, Duration),
     {MsgTimers, NumTimers}          = do_report_timers(TsStr, Timers),
     {MsgGauges, NumGauges}          = do_report_gauges(Gauges),
-    {MsgVmMetrics, NumVmMetrics}    = do_report_vm_metrics(TsStr, State),
+    {MsgVmMetrics, NumVmMetrics}    = do_report_vm_metrics(VM, TsStr, State),
     %% REPORT TO GRAPHITE
     case NumTimers + NumCounters + NumGauges + NumVmMetrics of
-        0 -> nothing_to_report;
+        0 -> 
+            nothing_to_report;
         NumStats ->
             FinalMsg = [ MsgCounters,
                          MsgTimers,
                          MsgGauges,
                          MsgVmMetrics,
                          %% Also graph the number of graphs we're graphing:
-                         "stats.num_stats ", num2str(NumStats), " ", TsStr, "\n"
+                         "stats.num_stats ", estatsd_utils:num_to_str(NumStats), " ", TsStr, "\n"
                        ],
-            send_to_graphite(FinalMsg, State)
-    end.
+            send_to_graphite(FinalMsg, GraphiteHost, GraphitePort)
+    end;
+%% TODO: Make everything below this point less atrocious.
+do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = true, destination = Destination}) ->
+    estatsd_tcp:send(Destination, All, Timers, Gauges, VM);
+do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = false}) ->
+    estatsd:aggregate(All, Timers, Gauges, VM).
 
 do_report_counters(TsStr, All, Duration) ->
     Msg = lists:foldl(
@@ -244,10 +325,10 @@ do_report_timers(TsStr, Timings) ->
                 %% Build stats string for graphite
                 Startl          = [ "stats.timers.", KeyS, "." ],
                 Endl            = [" ", TsStr, "\n"],
-                Fragment        = [ [Startl, Name, " ", num2str(Val), Endl] || {Name,Val} <-
+                Fragment        = [ [Startl, Name, " ", estatsd_utils:num_to_str(Val), Endl] || {Name,Val} <-
                                   [ {"mean", Mean},
                                     {"upper", Max},
-                                    {"upper_"++num2str(PctThreshold), MaxAtThreshold},
+                                    {"upper_"++estatsd_utils:num_to_str(PctThreshold), MaxAtThreshold},
                                     {"lower", Min},
                                     {"count", Count}
                                   ]],
@@ -260,12 +341,12 @@ do_report_gauges(Gauges) ->
         fun({Key, Vals}, Acc) ->
             KeyS = key2str(Key),
             Fragments = lists:foldl(
-                fun ({Val, TsStr}, KeyAcc) ->
+                fun ({Val, TS}, KeyAcc) ->
                     %% Build stats string for graphite
                     Fragment = [
                         "stats.gauges.", KeyS, " ",
                         io_lib:format("~w", [Val]), " ",
-                        TsStr, "\n"
+                        integer_to_list(TS), "\n"
                     ],
                     [ Fragment | KeyAcc ]
                 end, [], Vals
@@ -275,43 +356,33 @@ do_report_gauges(Gauges) ->
     ),
     {Msg, length(Gauges)}.
 
-do_report_vm_metrics(TsStr, State) ->
+do_report_vm_metrics(VMs, TsStr, State) ->
     case State#state.vm_metrics of
         true ->
-            NodeKey = node_key(),
-            {TotalReductions, Reductions} = erlang:statistics(reductions),
-            {NumberOfGCs, WordsReclaimed, _} = erlang:statistics(garbage_collection),
-            {{input, Input}, {output, Output}} = erlang:statistics(io),
-            RunQueue = erlang:statistics(run_queue),
-            StatsData = [
-                         {process_count, erlang:system_info(process_count)},
-                         {reductions, Reductions},
-                         {total_reductions, TotalReductions},
-                         {number_of_gcs, NumberOfGCs},
-                         {words_reclaimed, WordsReclaimed},
-                         {input, Input},
-                         {output, Output},
-                         {run_queue, RunQueue}
-                        ],
-            StatsMsg = lists:map(fun({Key, Val}) ->
-                [
-                 "stats.vm.", NodeKey, ".stats.", key2str(Key), " ",
-                 io_lib:format("~w", [Val]), " ",
-                 TsStr, "\n"
-                ]
-            end, StatsData),
-            MemoryMsg = lists:map(fun({Key, Val}) ->
-                [
-                 "stats.vm.", NodeKey, ".memory.", key2str(Key), " ",
-                 io_lib:format("~w", [Val]), " ",
-                 TsStr, "\n"
-                ]
-            end, erlang:memory()),
-            Msg = StatsMsg ++ MemoryMsg;
+            {TsStr, Msg, C} = lists:foldl(fun build_vm_stats/2, {TsStr, [], 0}, VMs),
+            {Msg, C};
         false ->
-            Msg = []
-    end,
-    {Msg, length(Msg)}.
+            {[], 0}
+    end.
+
+build_vm_stats({NodeKey, {StatsData, MemoryData}}, {TsStr, Acc, C}) ->
+    StatsMsg = lists:map(fun({Key, Val}) ->
+        [
+         "stats.vm.", NodeKey, ".stats.", key2str(Key), " ",
+         io_lib:format("~w", [Val]), " ",
+         TsStr, "\n"
+        ]
+    end, StatsData),
+    MemoryMsg = lists:map(fun({Key, Val}) ->
+        [
+         "stats.vm.", NodeKey, ".memory.", key2str(Key), " ",
+         io_lib:format("~w", [Val]), " ",
+         TsStr, "\n"
+        ]
+    end, MemoryData),
+    NumStats = length(StatsData) + length(MemoryData),
+    Msg = [StatsMsg, MemoryMsg],
+    {TsStr, [Acc, Msg], C + NumStats}.
 
 node_key() ->
     NodeList = atom_to_list(node()),

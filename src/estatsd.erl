@@ -1,7 +1,7 @@
 -module(estatsd).
 
 -export([
-        aggregate/3,
+        aggregate/3, aggregate/4,
          gauge/2,
          increment/1, increment/2, increment/3,
          decrement/1, decrement/2, decrement/3,
@@ -17,20 +17,13 @@
 -spec timing(Key :: atom() | string(), StartTime :: {integer(), integer(), integer()}) -> boolean()
     ; (Key :: atom() | string(), Duration :: number()) -> boolean().
 
-aggregate(Counters, Gauges, Timers) ->
-    % 1. Get Gauge and Timer tables
-    GaugeTid = get_table(gauge),
-    TimerTid = get_table(timer),
 
-    % 2. Add the list of each to their respective tables
-    spawn(fun() -> [ break_aggregate(GaugeTid, Gauge) || Gauge <- Gauges ] end),
-    spawn(fun() -> [ break_aggregate(TimerTid, Timer) || Timer <- Timers ] end),
+aggregate(Counters, Timers, Gauges) ->
+    aggregate(Counters, Timers, Gauges, []).
 
-    % 3. Increment all the passed counter keys by the supplied amounts
-    spawn(fun() -> [ increment(Key, Val, 1) || {Key, Val} <- Counters ] end).
-
-break_aggregate(Tid, {K, L}) ->
-    ets:insert(Tid, [ {K, V} || V <- L]).
+aggregate(Counters, Timers, Gauges, VM) ->
+    Res = gen_leader:leader_cast(estatsd_server, {aggregate, Counters, Timers, Gauges, VM}),
+    Res.
     
 timing(Key, StartTime = {_,_,_}) ->
     Dur = erlang:round(timer:now_diff(os:timestamp(), StartTime)/1000),
@@ -122,31 +115,7 @@ increment(Key, Amount, Sample) when Sample < 1 ->
     end;
 increment(Key, Amount, _Sample) ->
     Tid = get_table(stats),
-    do_increment(Tid, Key, Amount).
-
-%% @doc Attempts to update the counter for the key; if this fails,
-%% assume the failure resulted because the key does not exist, then
-%% use increment_new/3
--spec do_increment(Tid :: term(), Key :: atom() | string(), Amount :: integer()) -> integer().
-do_increment(Tid, Key, Amount) ->
-    case catch ets:update_counter(Tid, Key, {2, Amount}) of
-        N when is_integer(N) ->
-            N;
-        _ ->
-            increment_new(Tid, Key, Amount)
-    end.
-
-%% @doc Attempts to insert a new key into Tid; if this fails, assume
-%% the failure resulted because another process beat us to it, then
-%% go back to do_increment.
--spec increment_new(Tid :: term(), Key :: atom() | string(), Amoount :: integer()) -> integer().
-increment_new(Tid, Key, Amount) ->
-    case ets:insert_new(Tid, {Key, Amount}) of
-        false -> 
-            do_increment(Tid, Key, Amount);
-        _ -> 
-            Amount
-    end.
+    estatsd_utils:ets_incr(Tid, Key, Amount).
 
 %% @doc Decrements the specified key by 1.
 -spec decrement(Key :: atom() | string()) -> integer() | ok.
@@ -161,10 +130,11 @@ decrement(Key, Amount) -> decrement(Key, Amount, 1).
 %% rate (so graphite reflects a number closer to the truth).
 -spec decrement(Key :: atom() | string(), Amount :: integer(), Sample :: float()) -> integer() | ok.
 decrement(Key, Amount, Sample) ->
-    increment(Key, 0 - Amount, Sample).
+    increment(Key, -Amount, Sample).
 
 %% @doc Adds a reading to the gauge table with the specified key.
 -spec gauge(Key :: atom() | string(), Value :: number()) -> true.
 gauge(Key, Value) when is_number(Value) ->
     Tid = get_table(gauge),
-    ets:insert(Tid, {Key, Value}).
+    TS = estatsd_utils:unixtime(),
+    ets:insert(Tid, {Key, {Value, TS}}).
