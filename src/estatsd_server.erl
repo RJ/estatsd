@@ -28,6 +28,9 @@
         destination         = undefined,        % What to do every flush interval
         is_leader           = false,
         aggregate           = [],
+        enable_node_tagging = false,
+        node_tagging        = [],
+        cluster_tagging     = [],
         vm_metrics          = true,             % flag to enable sending VM metrics on flush
         stats_tables        = undefined,        % Evantually a tuple with two Tids for stats
         gauge_tables        = undefined,        % Eventually a tuple with two Tids for gauges
@@ -86,11 +89,26 @@ appvar(K, Def) ->
     end.
 
 init_state() ->
+    NodeTagging     = parse_tagging(appvar(node_tagging, [])),
+    ClusterTagging  = parse_tagging(appvar(cluster_tagging, [])),
     #state{ 
-        flush_interval  = appvar(flush_interval, 10000),
-        destination     = appvar(destination,  {graphite, "127.0.0.1", 2003}),
-        vm_metrics      = appvar(vm_metrics,  true)
+        flush_interval      = appvar(flush_interval, 10000),
+        destination         = appvar(destination,  {graphite, "127.0.0.1", 2003}),
+        vm_metrics          = appvar(vm_metrics,  false),
+        enable_node_tagging = appvar(enable_node_tagging, false),
+        node_tagging        = NodeTagging,
+        cluster_tagging     = ClusterTagging
     }.
+
+parse_tagging(Tagging) ->
+    [ parse_tag(Tag) || Tag <- Tagging ].
+
+parse_tag({KeyRX, Type, Position, Affix}) ->
+    {ok, RX} = re:compile(KeyRX),
+    {RX, Type, Position, parse_affix(Affix)}.
+
+parse_affix(node_key)   -> node_key();
+parse_affix(String)     -> String.
 
 elected(State, _Election, undefined) ->
     Synch = [],
@@ -107,7 +125,7 @@ surrendered(State = #state{aggregate = VMs}, _Sync, _Election) ->
 
     {ok, State#state{is_leader = false, aggregate = []}}.
 
-handle_cast(flush, State = #state{is_leader = IsLeader, aggregate = Aggregate, stats_tables = {CurrentStats, NewStats}, gauge_tables = {CurrentGauge, NewGauge}, timer_tables = {CurrentTimer, NewTimer}}, _Election) ->
+handle_cast(flush, State = #state{aggregate = Aggregate, stats_tables = {CurrentStats, NewStats}, gauge_tables = {CurrentGauge, NewGauge}, timer_tables = {CurrentTimer, NewTimer}}, _Election) ->
     % 1. Flip tables externally
     ets:insert(statsd, [{stats, NewStats}, {gauge, NewGauge}, {timer, NewTimer}]),
 
@@ -115,10 +133,10 @@ handle_cast(flush, State = #state{is_leader = IsLeader, aggregate = Aggregate, s
     timer:sleep(100),
 
     % 3. Gather data
-    All     = get_counters(CurrentStats, IsLeader),
-    Gauges  = get_gauges(CurrentGauge, IsLeader),
-    Timers  = get_timers(CurrentTimer, IsLeader), % Timers are a duplicate bag
-    VM      = get_vm_metrics(Aggregate, IsLeader),
+    All     = get_counters(CurrentStats, State),
+    Gauges  = get_gauges(CurrentGauge, State),
+    Timers  = get_timers(CurrentTimer, State), % Timers are a duplicate bag
+    VM      = get_vm_metrics(Aggregate, State),
 
     % 4. Do reports
     CurrTime = os:timestamp(),
@@ -143,19 +161,19 @@ handle_leader_cast({aggregate, Counters, Timers, Gauges, VMs}, State = #state{ag
     lists:foreach(fun({K, V}) -> estatsd_utils:ets_incr(statsd_counters_agg, K, V) end, Counters),
     lists:foreach(fun(Gauge) -> ets:insert(statsd_gauge_agg, Gauge) end, Gauges),
     CurrentTimers = ets:tab2list(statsd_timer_agg),
-    UpdatedTimers = lists:foldl(fun merge_timers/2, CurrentTimers, Timers),
+    UpdatedTimers = lists:foldl(fun merge_accumulation/2, CurrentTimers, Timers),
     lists:foreach(fun(Timer) -> ets:insert(statsd_timer_agg, Timer) end, UpdatedTimers),
     {noreply, State#state{aggregate = Aggregate ++ VMs}};
-handle_leader_cast(Cast, State, _Election) ->
+handle_leader_cast(_Cast, State, _Election) ->
     {noreply, State}.
 
-handle_call(Call,_,State, _Election) -> 
+handle_call(_Call,_,State, _Election) -> 
     {reply, ok, State}.
 
-handle_leader_call(Call, _From, State, _Election) ->
+handle_leader_call(_Call, _From, State, _Election) ->
     {reply, ok, State}.
 
-handle_info(Msg, State) -> 
+handle_info(_Msg, State) -> 
     {noreply, State}.
 
 handle_DOWN(_Node, State, _Election) ->
@@ -171,43 +189,56 @@ terminate(_, _) ->
     ok.
 
 %% INTERNAL STUFF
-get_counters(Tid, false) ->
-    ets:tab2list(Tid);
-get_counters(Tid, true) ->
-    LocalCounters = ets:tab2list(Tid),
+get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
+    [ {key2str(K),V} || {K,V} <- ets:tab2list(Tid) ];
+get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
+    [ {key2str(K),V} || {K,V} <- ets:tab2list(Tid) ];
+get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
+    tag_metrics(ets:tab2list(Tid), NodeTagging);
+get_counters(Tid, State = #state{is_leader = true}) ->
+    LocalCounters = get_counters(Tid, State#state{is_leader = false}),
     lists:foreach(fun({K, V}) -> estatsd_utils:ets_incr(statsd_counters_agg, K, V) end, LocalCounters),
     Counters = ets:tab2list(statsd_counters_agg),
     ets:delete_all_objects(statsd_counters_agg),
     Counters.
 
-get_timers(Tid, false) ->
-    accumulate(ets:tab2list(Tid));
-get_timers(Tid, true) ->
-    LocalTimers = accumulate(ets:tab2list(Tid)),
+get_timers(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
+    [ {key2str(K),V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
+get_timers(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
+    [ {key2str(K),V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
+get_timers(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
+    tag_metrics(accumulate(ets:tab2list(Tid)), NodeTagging);
+get_timers(Tid, State = #state{is_leader = true}) ->
+    LocalTimers = get_timers(Tid, State#state{is_leader = false}),
     Timers = ets:tab2list(statsd_timer_agg),
     ets:delete_all_objects(statsd_timer_agg),
-    lists:foldl(fun merge_timers/2, Timers, LocalTimers).
+    lists:foldl(fun merge_accumulation/2, Timers, LocalTimers).
     
-merge_timers({K, Values}, Acc) ->
+merge_accumulation({K, Values}, Acc) ->
     case lists:keyfind(K, 1, Acc) of
         false -> [{K, Values}|Acc];
         {K, OldValues} -> lists:keystore(K, 1, Acc, {K, OldValues ++ Values})
     end.
 
-get_gauges(Tid, false) ->
-    accumulate(ets:tab2list(Tid));
-get_gauges(Tid, true) ->
-    LocalGauges = ets:tab2list(Tid),
-    lists:foreach(fun(Gauge) -> ets:insert(statsd_gauge_agg, Gauge) end, LocalGauges),
+get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
+    [ {key2str(K), V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
+get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
+    [ {key2str(K), V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
+get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
+    tag_metrics(accumulate(ets:tab2list(Tid)), NodeTagging);
+get_gauges(Tid, State = #state{is_leader = true}) ->
+    LocalGauges = get_gauges(Tid, State#state{is_leader = false}),
     Gauges = accumulate(ets:tab2list(statsd_gauge_agg)),
     ets:delete_all_objects(statsd_gauge_agg),
-    Gauges.
+    lists:foldl(fun merge_accumulation/2, Gauges, LocalGauges).
 
-get_vm_metrics(_Aggregate, false) ->
+%% Don't apply node tagging rules for VM stats. They are not
+%% user-generated keys.
+get_vm_metrics(_Aggregate, _State = #state{is_leader = false}) ->
     [{node_key(), get_local_metrics()}];
-get_vm_metrics(Aggregate, true) ->
-    LocalMetrics = get_local_metrics(),
-    [{node_key(), LocalMetrics}|Aggregate].
+get_vm_metrics(Aggregate, State = #state{is_leader = true}) ->
+    [LocalMetrics] = get_vm_metrics([], State#state{is_leader = false}),
+    [LocalMetrics|Aggregate].
 
 get_local_metrics() ->
     {TotalReductions, Reductions} = erlang:statistics(reductions),
@@ -215,14 +246,14 @@ get_local_metrics() ->
     {{input, Input}, {output, Output}} = erlang:statistics(io),
     RunQueue = erlang:statistics(run_queue),
     StatsData = [
-                 {process_count, erlang:system_info(process_count)},
-                 {reductions, Reductions},
-                 {total_reductions, TotalReductions},
-                 {number_of_gcs, NumberOfGCs},
-                 {words_reclaimed, WordsReclaimed},
-                 {input, Input},
-                 {output, Output},
-                 {run_queue, RunQueue}
+                 {"process_count", erlang:system_info(process_count)},
+                 {"reductions", Reductions},
+                 {"total_reductions", TotalReductions},
+                 {"number_of_gcs", NumberOfGCs},
+                 {"words_reclaimed", WordsReclaimed},
+                 {"input", Input},
+                 {"output", Output},
+                 {"run_queue", RunQueue}
                 ],
     MemoryData = erlang:memory(),
     {StatsData, MemoryData}.
@@ -262,7 +293,10 @@ key2str(K) when is_list(K) ->
             {?COMPILE_ONCE("[^a-zA-Z_\\-0-9\\.]"), ""}
         ]).
 
-do_report(All, Timers, Gauges, VM, CurrTime, State = #state{destination = {graphite, GraphiteHost, GraphitePort}}) ->
+do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, cluster_tagging = ClusterTagging = [_|_]}) ->
+    {Duration, {All1, Timers1, Gauges1}} = timer:tc(fun() -> tag_metrics({All, Timers, Gauges}, ClusterTagging) end),
+    do_report(All1, Timers1, Gauges1, VM, CurrTime, State#state{cluster_tagging = []});
+do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, destination = {graphite, GraphiteHost, GraphitePort}}) ->
     % One time stamp string used in all stats lines:
     Duration                        = timer:now_diff(CurrTime, State#state.last_flush) / 1000000,
     TsStr                           = estatsd_utils:num_to_str(estatsd_utils:unixtime(CurrTime)),
@@ -285,10 +319,36 @@ do_report(All, Timers, Gauges, VM, CurrTime, State = #state{destination = {graph
             send_to_graphite(FinalMsg, GraphiteHost, GraphitePort)
     end;
 %% TODO: Make everything below this point less atrocious.
-do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = true, destination = Destination}) ->
+do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = true, destination = Destination, cluster_tagging = ClusterTagging}) ->
     estatsd_tcp:send(Destination, All, Timers, Gauges, VM);
 do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = false}) ->
     estatsd:aggregate(All, Timers, Gauges, VM).
+
+tag_metrics(Metrics, Tags) when is_list(Metrics) ->
+    lists:foldl(fun apply_tags/2, Metrics, Tags);
+tag_metrics(Metrics, Tags) when is_tuple(Metrics) ->
+    list_to_tuple([ lists:foldl(fun apply_tags/2, Values, Tags) || Values <- tuple_to_list(Metrics) ]).
+
+apply_tags(Tag, Values) ->
+    lists:foldl(fun(Value, Acc) -> apply_tag(Tag, Value, Acc) end, [], Values).
+
+apply_tag({KeyPattern, copy, Position, Affix}, {Key0, Value}, Acc) ->
+    Key = key2str(Key0),
+    case re:run(Key, KeyPattern, [{capture, none}]) of
+        match   -> [{affix(Key, Position, Affix), Value}, {Key, Value} | Acc];
+        nomatch -> [{Key, Value} | Acc]
+    end;
+apply_tag({KeyPattern, replace, Position, Affix}, {Key0, Value}, Acc) ->
+    Key = key2str(Key0),
+    case re:run(Key, KeyPattern, [{capture, none}]) of
+        match   -> [{affix(Key, Position, Affix), Value}|Acc];
+        nomatch -> [{Key, Value}|Acc]
+    end.
+
+affix(Key, prefix, Affix) ->
+    key2str([Affix, ".", Key]);
+affix(Key, suffix, Affix) ->
+    key2str([Key, ".", Affix]).
 
 do_report_counters(TsStr, All, Duration) ->
     Msg = lists:foldl(
