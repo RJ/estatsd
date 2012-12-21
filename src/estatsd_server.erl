@@ -42,7 +42,7 @@ start_link() ->
         undefined -> [node()];
         {ok, Peers} -> Peers
     end,
-    gen_leader:start_link(?MODULE, Nodes, [], ?MODULE, [], []).
+    gen_leader:start_link(?MODULE, Nodes, [], ?MODULE, [], [{spawn_opt, [{priority, high}]}]).
 
 %%
 
@@ -234,6 +234,8 @@ get_gauges(Tid, State = #state{is_leader = true}) ->
 
 %% Don't apply node tagging rules for VM stats. They are not
 %% user-generated keys.
+get_vm_metrics(Aggregate, _State = #state{vm_metrics = false}) ->
+    Aggregate;
 get_vm_metrics(_Aggregate, _State = #state{is_leader = false}) ->
     [{node_key(), get_local_metrics()}];
 get_vm_metrics(Aggregate, State = #state{is_leader = true}) ->
@@ -294,7 +296,7 @@ key2str(K) when is_list(K) ->
         ]).
 
 do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, cluster_tagging = ClusterTagging = [_|_]}) ->
-    {Duration, {All1, Timers1, Gauges1}} = timer:tc(fun() -> tag_metrics({All, Timers, Gauges}, ClusterTagging) end),
+    {All1, Timers1, Gauges1} = tag_metrics({All, Timers, Gauges}, ClusterTagging),
     do_report(All1, Timers1, Gauges1, VM, CurrTime, State#state{cluster_tagging = []});
 do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, destination = {graphite, GraphiteHost, GraphitePort}}) ->
     % One time stamp string used in all stats lines:
@@ -319,7 +321,7 @@ do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, de
             send_to_graphite(FinalMsg, GraphiteHost, GraphitePort)
     end;
 %% TODO: Make everything below this point less atrocious.
-do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = true, destination = Destination, cluster_tagging = ClusterTagging}) ->
+do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = true, destination = Destination}) ->
     estatsd_tcp:send(Destination, All, Timers, Gauges, VM);
 do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = false}) ->
     estatsd:aggregate(All, Timers, Gauges, VM).
