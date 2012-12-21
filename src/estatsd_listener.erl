@@ -14,14 +14,8 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-appvar(Key, Default) ->
-    case application:get_env(estatsd, Key) of
-        undefined -> Default;
-        {ok, Val} -> Val
-    end.
-
 init([]) ->
-    Port = appvar(port, 8125),
+    Port = estatsd_utils:appvar(listen_port, 8125),
     {ok, LSock} = gen_udp:open(Port, [binary, {active, true}]),
     {ok, LSock}.
 

@@ -43,7 +43,7 @@ init([]) ->
             worker,
             [estatsd_listener]
         },
-        ranch:child_spec(estatsd_tcp, 32, ranch_tcp, [{port, 8128}], estatsd_tcp_protocol, []),
-        ranch:child_spec(estatsd_tcpz, 32, ranch_tcp, [{port, 8129}], estatsd_tcpz_protocol, [])
+        ranch:child_spec(estatsd_tcp, 32, ranch_tcp, [{port, estatsd_utils:appvar(tcp_port, 8128)}], estatsd_tcp_protocol, []),
+        ranch:child_spec(estatsd_tcpz, 32, ranch_tcp, [{port, estatsd_utils:appvar(tcpz_port, 8129)}], estatsd_tcpz_protocol, [])
     ],
     {ok, { {one_for_one, 10000, 10}, Children} }.

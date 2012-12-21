@@ -4,10 +4,20 @@
 %% @doc             Miscellaneous shared functions.
 %% ================================================================
 -module(estatsd_utils).
+-export([appvar/2]).
 -export([ets_incr/3]).
 -export([unixtime/0, unixtime/1]).
 -export([num_to_str/1]).
 -export([bin_to_hash/1]).
+
+%% @doc Returns the estatsd environment variable K, or Def
+%% if the key is undefined.
+-spec appvar(K :: atom(), Def :: undefined | term()) -> term().
+appvar(K, Def) ->
+    case application:get_env(estatsd, K) of
+        {ok, Val} -> Val;
+        undefined -> Def
+    end.
 
 %% @doc Attempts to update the counter for the key; if this fails,
 %% assume the failure resulted because the key does not exist, then

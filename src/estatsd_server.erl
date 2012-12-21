@@ -82,20 +82,14 @@ init([]) ->
             timer_tables    = {TidTimerA, TidTimerB}
         }}.
 
-appvar(K, Def) ->
-    case application:get_env(estatsd, K) of
-        {ok, Val} -> Val;
-        undefined -> Def
-    end.
-
 init_state() ->
-    NodeTagging     = parse_tagging(appvar(node_tagging, [])),
-    ClusterTagging  = parse_tagging(appvar(cluster_tagging, [])),
+    NodeTagging     = parse_tagging(estatsd_utils:appvar(node_tagging, [])),
+    ClusterTagging  = parse_tagging(estatsd_utils:appvar(cluster_tagging, [])),
     #state{ 
-        flush_interval      = appvar(flush_interval, 10000),
-        destination         = appvar(destination,  {graphite, "127.0.0.1", 2003}),
-        vm_metrics          = appvar(vm_metrics,  false),
-        enable_node_tagging = appvar(enable_node_tagging, false),
+        flush_interval      = estatsd_utils:appvar(flush_interval, 10000),
+        destination         = estatsd_utils:appvar(destination,  {graphite, "127.0.0.1", 2003}),
+        vm_metrics          = estatsd_utils:appvar(vm_metrics,  false),
+        enable_node_tagging = estatsd_utils:appvar(enable_node_tagging, false),
         node_tagging        = NodeTagging,
         cluster_tagging     = ClusterTagging
     }.
