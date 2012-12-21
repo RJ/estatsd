@@ -24,7 +24,7 @@ loop(Socket, Transport, Buffer) ->
             {Messages, NewBuffer} = ?MODULE:get_messages([Buffer, Data]),
             lists:foreach(fun estatsd_tcp:handle_message/1, [ estatsd_tcp:decompress(Message) || Message <- Messages ]),
             loop(Socket, Transport, NewBuffer);
-        SomethingElse ->
+        _ ->
             ok = Transport:close(Socket)
     end.
 

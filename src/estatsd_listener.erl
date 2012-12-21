@@ -25,10 +25,10 @@ init([]) ->
     {ok, LSock} = gen_udp:open(Port, [binary, {active, true}]),
     {ok, LSock}.
 
-handle_call(Call, _From, Socket) ->
+handle_call(_Call, _From, Socket) ->
     {reply, ok, Socket}.
 
-handle_cast(Cast, Socket) ->
+handle_cast(_Cast, Socket) ->
     {noreply, Socket}.
 
 handle_info({udp, Socket, _IP, _Port, <<"$estatsd.agg$\n", Rest/binary>>}, Socket) ->
@@ -38,7 +38,7 @@ handle_info({udp, Socket, _IP, _Port, <<"$estatsd.agg$\n", Rest/binary>>}, Socke
 handle_info({udp, Socket, _IP, _Port, Packet}, Socket) ->
     parse_packet(Packet),
     {noreply, Socket};
-handle_info(Info, Socket) ->
+handle_info(_Info, Socket) ->
     {noreply, Socket}.
 
 code_change(_OldVsn, Socket, _Extra) ->
