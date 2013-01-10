@@ -242,14 +242,14 @@ get_local_metrics() ->
     {{input, Input}, {output, Output}} = erlang:statistics(io),
     RunQueue = erlang:statistics(run_queue),
     StatsData = [
-                 {"process_count", erlang:system_info(process_count)},
-                 {"reductions", Reductions},
-                 {"total_reductions", TotalReductions},
-                 {"number_of_gcs", NumberOfGCs},
-                 {"words_reclaimed", WordsReclaimed},
-                 {"input", Input},
-                 {"output", Output},
-                 {"run_queue", RunQueue}
+                 {'process_count', erlang:system_info(process_count)},
+                 {'reductions', Reductions},
+                 {'total_reductions', TotalReductions},
+                 {'number_of_gcs', NumberOfGCs},
+                 {'words_reclaimed', WordsReclaimed},
+                 {'input', Input},
+                 {'output', Output},
+                 {'run_queue', RunQueue}
                 ],
     MemoryData = erlang:memory(),
     {StatsData, MemoryData}.
