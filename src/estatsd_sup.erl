@@ -23,11 +23,6 @@ start_link() ->
 init([]) ->
     Children = [
         {
-            ranch_sup,
-            {ranch_sup, start_link, []},
-            permanent, 5000, supervisor, [ranch_sup]
-        },
-        {
             estatsd_server,
             {estatsd_server, start_link, []},
             permanent, 
