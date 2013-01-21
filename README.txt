@@ -17,6 +17,11 @@ QUICK DEMO
    > estatsd:increment(foo, 123).
 6) Observe graphite now has 1 data point.
 
+STANDALONE SERVICE
+==========
+
+Use [estatsd_server](https://github.com/fauxsoup/estatsd_server) to generate a standalone version of estatsd.
+
 USAGE
 =====
 
