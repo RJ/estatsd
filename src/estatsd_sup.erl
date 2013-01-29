@@ -12,6 +12,7 @@
 -define(GRAPHITE_HOST,  appvar(graphite_host,  "127.0.0.1")).
 -define(GRAPHITE_PORT,  appvar(graphite_port,  2003)).
 -define(VM_METRICS,     appvar(vm_metrics,  true)).
+-define(VM_NAME,        appvar(vm_name,  node())).
 
 %% ===================================================================
 %% API functions
@@ -19,28 +20,28 @@
 
 
 start_link() ->
-    start_link( ?FLUSH_INTERVAL, ?GRAPHITE_HOST, ?GRAPHITE_PORT, ?VM_METRICS).
+    start_link( ?FLUSH_INTERVAL, ?GRAPHITE_HOST, ?GRAPHITE_PORT, ?VM_METRICS, ?VM_NAME).
 
 start_link(FlushIntervalMs) ->
-    start_link( FlushIntervalMs, ?GRAPHITE_HOST, ?GRAPHITE_PORT, ?VM_METRICS).
+    start_link( FlushIntervalMs, ?GRAPHITE_HOST, ?GRAPHITE_PORT, ?VM_METRICS, ?VM_NAME).
 
 start_link(FlushIntervalMs, GraphiteHost, GraphitePort) ->
-    start_link( FlushIntervalMs, GraphiteHost, GraphitePort, ?VM_METRICS).
+    start_link( FlushIntervalMs, GraphiteHost, GraphitePort, ?VM_METRICS, ?VM_NAME).
 
-start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics) ->
+start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, VmName) ->
     supervisor:start_link({local, ?MODULE}, 
                           ?MODULE, 
-                          [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]).
+                          [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, VmName]).
 
 %% ===================================================================
 %% Supervisor callbacks
 %% ===================================================================
 
-init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]) ->
+init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, VmName]) ->
     Children = [
         {estatsd_server, 
          {estatsd_server, start_link, 
-             [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]},
+             [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, VmName]},
          permanent, 5000, worker, [estatsd_server]}
     ],
     {ok, { {one_for_one, 10000, 10}, Children} }.
