@@ -23,9 +23,6 @@ USAGE
 Add this app to your rebar deps, and make sure it's started somehow
 eg: application:start(estatsd).
 
-You can configure custom graphite host/port and flush interval using 
-application environment vars. See estatsd_sup for details.
-
 The following calls to estatsd are all gen_server:cast, ie non-blocking.
 
 Gauges
@@ -53,7 +50,18 @@ Or for your convenience:
     do_sometask(), 
     estatsd:timing(sometast, Start).        %% uses now() and now_diff for you
 
+Configuration
+-------------
 
+You can configure custom graphite host/port and flush interval using
+application environment vars, track Erlang internal metrics, including
+setting a custom prefix or defaulting to the Erlang node name:
+
+- `flush_interval` -- ms interval between flushing of stats to graphit
+- `graphite_host`  -- graphite server host
+- `graphite_port`  -- graphite server port
+- `vm_metrics`     -- true/false flag to enable sending VM metrics on flush
+- `vm_name`        -- use the provided atom instead of node()
 
 NOTES
 =====

@@ -11,32 +11,33 @@
 -module(estatsd_server).
 -behaviour(gen_server).
 
--export([start_link/4]).
+-export([start_link/5]).
 
 %-export([key2str/1,flush/0]). %% export for debugging 
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
-         terminate/2, code_change/3]).
+         terminate/2, code_change/3, node_key/1]).
 
 -record(state, {timers,             % gb_tree of timer data
                 flush_interval,     % ms interval between stats flushing
                 flush_timer,        % TRef of interval timer
                 graphite_host,      % graphite server host
                 graphite_port,      % graphite server port
-                vm_metrics            % flag to enable sending VM metrics on flush
+                vm_metrics,         % flag to enable sending VM metrics on flush
+                vm_name             % use the provided atom instead of node()
                }).
 
-start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics) ->
+start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, VmName) ->
     gen_server:start_link({local, ?MODULE}, 
                           ?MODULE, 
-                          [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics], 
+                          [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, VmName], 
                           []).
 
 %%
 
-init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]) ->
-    error_logger:info_msg("estatsd will flush stats to ~p:~w every ~wms\n", 
-                          [ GraphiteHost, GraphitePort, FlushIntervalMs ]),
+init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, VmName]) ->
+    error_logger:info_msg("estatsd will flush stats to ~p:~w every ~wms as node ~p~n", 
+                          [ GraphiteHost, GraphitePort, FlushIntervalMs, VmName ]),
     ets:new(statsd, [named_table, set]),
     ets:new(statsdgauge, [named_table, set]),
     %% Flush out stats to graphite periodically
@@ -47,7 +48,8 @@ init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]) ->
                     flush_timer     = Tref,
                     graphite_host   = GraphiteHost,
                     graphite_port   = GraphitePort,
-                    vm_metrics        = VmMetrics
+                    vm_metrics      = VmMetrics,
+                    vm_name         = VmName
                   },
     {ok, State}.
 
@@ -225,7 +227,7 @@ do_report_gauges(Gauges) ->
 do_report_vm_metrics(TsStr, State) ->
     case State#state.vm_metrics of
         true ->
-            NodeKey = node_key(),
+            NodeKey = node_key(State#state.vm_name),
             {TotalReductions, Reductions} = erlang:statistics(reductions),
             {NumberOfGCs, WordsReclaimed, _} = erlang:statistics(garbage_collection),
             {{input, Input}, {output, Output}} = erlang:statistics(io),
@@ -260,9 +262,13 @@ do_report_vm_metrics(TsStr, State) ->
     end,
     {Msg, length(Msg)}.
 
-node_key() ->
-    NodeList = atom_to_list(node()),
-    {ok, R} = re:compile("[\@\.]"),
-    Opts = [global, {return, list}],
-    S = re:replace(NodeList,  R, "_", Opts),
-    key2str(S).
+node_key(VmName) ->
+  Key = case is_atom(VmName) of
+    false ->
+      NodeList = atom_to_list(node()),
+      {ok, R} = re:compile("[\@\.]"),
+      Opts = [global, {return, list}],
+      re:replace(NodeList,  R, "_", Opts);
+    true -> VmName
+  end,
+  key2str(Key).
