@@ -12,14 +12,11 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
 
 start_link() ->
-    error_logger:error_msg("Starting...~n"),
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
     Port = estatsd_utils:appvar(listen_port, 8125),
-    error_logger:error_msg("Listening on port ~p~n", [Port]),
     {ok, LSock} = gen_udp:open(Port, [binary, {active, true}]),
-    error_logger:error_msg("Listen Socket: ~p~n", [LSock]),
     {ok, LSock}.
 
 handle_call(_Call, _From, Socket) ->
@@ -45,12 +42,10 @@ terminate(_Reason, _Socket) ->
     ok.
 
 parse_packet(Packet) ->
-    io:format("Parsing packet: ~p~n", [Packet]),
     Metrics = re:split(Packet, ?COMPILE_ONCE("[\\r\\n]+"), [{return, list}, trim]),
     lists:foreach(fun parse_metric/1, Metrics).
 
 parse_metric(Metric) ->
-    io:format("Parsing metric: ~p~n", [Metric]),
     case re:split(Metric, ?COMPILE_ONCE(":"), [{return, list}]) of
         [Key] -> 
             estatsd:increment(Key);
@@ -59,7 +54,6 @@ parse_metric(Metric) ->
     end.
 
 parse_value(Key, Value) ->
-    io:format("Parsing value: ~p:~p~n", [Key, Value]),
     case re:split(Value, ?COMPILE_ONCE("\\|"), [{return, list}]) of
         [N, "ms"] ->
             estatsd:timing(Key, list_to_integer(N));
