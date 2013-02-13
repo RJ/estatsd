@@ -310,7 +310,7 @@ do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, de
                          MsgGauges,
                          MsgVmMetrics,
                          %% Also graph the number of graphs we're graphing:
-                         "stats.num_stats ", estatsd_utils:num_to_str(NumStats), " ", TsStr, "\n"
+                         "statsd.num_stats ", estatsd_utils:num_to_str(NumStats), " ", TsStr, "\n"
                        ],
             send_to_graphite(FinalMsg, GraphiteHost, GraphitePort)
     end;
@@ -352,11 +352,11 @@ do_report_counters(TsStr, All, Duration) ->
                         KeyS = key2str(Key),
                         Val = Val0 / Duration,
                         %% Build stats string for graphite
-                        Fragment = [ "stats.counters.", KeyS, " ", 
+                        Fragment = [ "stats.", KeyS, " ", 
                                      io_lib:format("~w", [Val]), " ", 
                                      TsStr, "\n",
 
-                                     "stats.counters.counts.", KeyS, " ", 
+                                     "stats_counts.", KeyS, " ", 
                                      io_lib:format("~w",[Val0]), " ", 
                                      TsStr, "\n"
                                    ],
