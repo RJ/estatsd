@@ -54,7 +54,7 @@ parse_metric(Metric) ->
     end.
 
 parse_value(Key, Value) ->
-    case re:split(Value, ?COMPILE_ONCE("\\|"), [{return, list}]) of
+    case re:split(Value, ?COMPILE_ONCE("\\|"), [{return, list}, trim]) of
         [N, "ms"] ->
             estatsd:timing(Key, list_to_integer(N));
         [N, "g"] ->
@@ -62,5 +62,15 @@ parse_value(Key, Value) ->
         [N, "c"] ->
             estatsd:increment(Key, list_to_integer(N));
         [N, "c", [$@|Sample]] ->
-            estatsd:increment(Key, trunc(list_to_integer(N) / list_to_float(Sample)))
+            estatsd:increment(Key, trunc(list_to_integer(N) / parse_float(Sample)));
+        _Other ->
+            error_logger:error_msg("Bad Value: ~p | ~p", [Key, Value])
     end.
+
+parse_float(String) ->
+    FlatString = binary_to_list(iolist_to_binary(String)),
+    case string:to_float(FlatString) of
+        {error, no_float} -> list_to_integer(String);
+        {F, _Rest} -> F
+    end.
+
