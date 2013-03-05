@@ -1,6 +1,45 @@
+%% @doc Estatsd API.
+%%
+%% Counters describe rate of change per time unit.
+%% These examples hold irrespective of the `flush_interval' setting:
+%% ```
+%% rate_1_per_sec() ->
+%%     estatsd:increment(foo),
+%%     timer:sleep(1000),
+%%     rate_1_per_sec().
+%%
+%% rate_60_per_min() ->
+%%     estatsd:increment(foo,1,1/60),
+%%     timer:sleep(1000),
+%%     rate_60_per_min().
+%%
+%% rate_100_per_10s() ->
+%%     estatsd:increment(foo,1,1/10),
+%%     timer:sleep(100),
+%%     rate_100_per_10s().
+%% '''
+%%
+%% Timing example:
+%% ```
+%% timing() ->
+%%     estatsd:timing(bar, fun() -> lists:sort([random:uniform(10000) || _ <- lists:seq(1,10000)]) end),
+%%     timing().
+%% '''
+%%
+%% Gauge example:
+%%
+%% <b>NOTE:</b> For each call to `estatsd:gauge/2' a line of text (Carbon plaintext protocol) will be sent
+%% when the `flush_interval' expires.  This can potentially generate a lot of TCP traffic!
+%% ```
+%% gauge(C) ->
+%%     estatsd:gauge(baz, C),
+%%     timer:sleep(1000),
+%%     gauge(C + 1).
+%% '''
 -module(estatsd).
 
 -export([
+         start/0,
          gauge/2,
          increment/1, increment/2, increment/3,
          decrement/1, decrement/2, decrement/3,
@@ -8,6 +47,14 @@
         ]).
 
 -define(SERVER, estatsd_server).
+
+start() ->
+    application:start(estatsd).
+
+timing(Key, Fun) when is_function(Fun,0) ->
+    Start = erlang:now(),
+    Fun(),
+    timing(Key, Start);
 
 % Convenience: just give it the now() tuple when the work started
 timing(Key, StartTime = {_,_,_}) ->
