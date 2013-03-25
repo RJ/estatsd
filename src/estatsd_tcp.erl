@@ -32,11 +32,11 @@ counter_to_json({Key, Value}) ->
 counter_from_json({Key, Value}) ->
     {binary_to_list(Key), Value}.
 
-timer_to_json({Key, Value}) ->
-    {iolist_to_binary(Key), Value}.
+timer_to_json({Key, Values}) ->
+    {iolist_to_binary(Key), {[ {list_to_binary(integer_to_list(K)), V} || {K, V} <- Values ]}}.
 
-timer_from_json({Key, Value}) ->
-    {binary_to_list(Key), Value}.
+timer_from_json({Key, {Values}}) ->
+    {binary_to_list(Key), [ {list_to_integer(binary_to_list(K)), V} || {K, V} <- Values ]}.
 
 gauge_to_json({Key, Values}) ->
     {iolist_to_binary(Key), [ [Value, TS] || {Value, TS} <- Values ]}.

@@ -59,7 +59,7 @@ init([]) ->
     % Optimize for write operations
     ets:new(statsd_counters_agg, [named_table, set, public, {write_concurrency, true}]),
     ets:new(statsd_gauge_agg, [named_table, set, public, {write_concurrency, true}]),
-    ets:new(statsd_timer_agg, [named_table, duplicate_bag, public, {write_concurrency, true}]),
+    ets:new(statsd_timer_agg, [named_table, set, public, {write_concurrency, true}]),
     TidStatsA   = ets:new(statsd_counters_a, [set, public, {write_concurrency, true}]),
     TidStatsB   = ets:new(statsd_counters_b, [set, public, {write_concurrency, true}]),
     TidGaugeA   = ets:new(statsd_gauge_a, [duplicate_bag, public, {write_concurrency, true}]),
@@ -85,12 +85,11 @@ init([]) ->
 init_state() ->
     NodeTagging     = parse_tagging(estatsd_utils:appvar(node_tagging, [])),
     ClusterTagging  = parse_tagging(estatsd_utils:appvar(cluster_tagging, [])),
-    NodeTags        = length(NodeTagging),
     #state{ 
         flush_interval      = estatsd_utils:appvar(flush_interval, 10000),
         destination         = estatsd_utils:appvar(destination,  {graphite, "127.0.0.1", 2003}),
         vm_metrics          = estatsd_utils:appvar(vm_metrics,  false),
-        enable_node_tagging = estatsd_utils:appvar(enable_node_tagging, false) andalso NodeTags > 0,
+        enable_node_tagging = estatsd_utils:appvar(enable_node_tagging, false),
         node_tagging        = NodeTagging,
         cluster_tagging     = ClusterTagging
     }.
@@ -156,9 +155,7 @@ handle_leader_cast({aggregate, Counters, Timers, Gauges, VMs}, State = #state{ag
     spawn(fun() ->
                 lists:foreach(fun({K, V}) -> estatsd_utils:ets_incr(statsd_counters_agg, K, V) end, Counters),
                 lists:foreach(fun(Gauge) -> ets:insert(statsd_gauge_agg, Gauge) end, Gauges),
-                CurrentTimers = ets:tab2list(statsd_timer_agg),
-                UpdatedTimers = lists:foldl(fun merge_accumulation/2, CurrentTimers, Timers),
-                lists:foreach(fun(Timer) -> ets:insert(statsd_timer_agg, Timer) end, UpdatedTimers)
+                lists:foreach(fun({K, Vs}) -> lists:foreach(fun({Dur, C}) -> estatsd_utils:ets_incr(statsd_timer_agg, {K,Dur}, C) end, Vs) end, Timers)
         end),
     {noreply, State#state{aggregate = Aggregate ++ VMs}};
 handle_leader_cast(_Cast, State, _Election) ->
@@ -188,6 +185,8 @@ terminate(_, _) ->
 %% INTERNAL STUFF
 get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
     [ {key2str(K),V} || {K,V} <- ets:tab2list(Tid) ];
+get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
+    [ {key2str(K),V} || {K,V} <- ets:tab2list(Tid) ];
 get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
     tag_metrics(ets:tab2list(Tid), NodeTagging);
 get_counters(Tid, State = #state{is_leader = true}) ->
@@ -199,14 +198,17 @@ get_counters(Tid, State = #state{is_leader = true}) ->
 
 get_timers(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
     accumulate_timers(ets:tab2list(Tid));
+get_timers(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
+    accumulate_timers(ets:tab2list(Tid));
 get_timers(Tid, State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
     Timers = get_timers(Tid, State#state{enable_node_tagging = false}),
     tag_metrics(Timers, NodeTagging);
 get_timers(Tid, State = #state{is_leader = true}) ->
     LocalTimers = get_timers(Tid, State#state{is_leader = false}),
-    Timers = ets:tab2list(statsd_timer_agg),
+    lists:foreach(fun({K,V}) -> lists:foreach(fun({D,C}) -> estatsd_utils:ets_incr(statsd_timer_agg, {K,D}, C) end, V) end, LocalTimers),
+    Timers = accumulate_timers(ets:tab2list(statsd_timer_agg)),
     ets:delete_all_objects(statsd_timer_agg),
-    lists:foldl(fun merge_accumulation/2, Timers, LocalTimers).
+    Timers.
     
 merge_accumulation({K, Values}, Acc) ->
     case lists:keyfind(K, 1, Acc) of
@@ -215,6 +217,8 @@ merge_accumulation({K, Values}, Acc) ->
     end.
 
 get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
+    [ {key2str(K), V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
+get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
     [ {key2str(K), V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
 get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
     tag_metrics(accumulate(ets:tab2list(Tid)), NodeTagging);
@@ -264,7 +268,8 @@ do_accumulate({Key, Value}, L) ->
     end.
 
 accumulate_timers(List) ->
-    [ {key2str(Key), dict:to_list(Values)} || {Key, Values} <- dict:to_list(lists:foldl(fun do_accumulate_timers/2, dict:new(), List)) ].
+    Res =[ {key2str(Key), dict:to_list(Values)} || {Key, Values} <- dict:to_list(lists:foldl(fun do_accumulate_timers/2, dict:new(), List)) ],
+    Res.
 
 do_accumulate_timers({{Key, Dur}, C}, Timers) ->
     dict:update(Key, fun(Durations) ->
