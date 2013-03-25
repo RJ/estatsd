@@ -31,7 +31,7 @@ timing(Key, StartTime = {_,_,_}) ->
 
 timing(Key, Duration) when is_integer(Duration) -> 
     Tid = get_table(timer),
-    ets:insert(Tid, {Key, Duration});
+    estatsd_utils:ets_incr(Tid, {Key, Duration}, 1);
 timing(Key, Duration) -> 
     timing(Key, round(Duration)).
 

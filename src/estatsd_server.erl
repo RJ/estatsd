@@ -64,8 +64,8 @@ init([]) ->
     TidStatsB   = ets:new(statsd_counters_b, [set, public, {write_concurrency, true}]),
     TidGaugeA   = ets:new(statsd_gauge_a, [duplicate_bag, public, {write_concurrency, true}]),
     TidGaugeB   = ets:new(statsd_gauge_b, [duplicate_bag, public, {write_concurrency, true}]),
-    TidTimerA   = ets:new(statsd_timer_a, [duplicate_bag, public, {write_concurrency, true}]),
-    TidTimerB   = ets:new(statsd_timer_b, [duplicate_bag, public, {write_concurrency, true}]),
+    TidTimerA   = ets:new(statsd_timer_a, [set, public, {write_concurrency, true}]),
+    TidTimerB   = ets:new(statsd_timer_b, [set, public, {write_concurrency, true}]),
 
     % 4. Indicate which tables are currently our "write" buffers
     ets:insert(statsd, {stats, TidStatsA}),
@@ -85,11 +85,12 @@ init([]) ->
 init_state() ->
     NodeTagging     = parse_tagging(estatsd_utils:appvar(node_tagging, [])),
     ClusterTagging  = parse_tagging(estatsd_utils:appvar(cluster_tagging, [])),
+    NodeTags        = length(NodeTagging),
     #state{ 
         flush_interval      = estatsd_utils:appvar(flush_interval, 10000),
         destination         = estatsd_utils:appvar(destination,  {graphite, "127.0.0.1", 2003}),
         vm_metrics          = estatsd_utils:appvar(vm_metrics,  false),
-        enable_node_tagging = estatsd_utils:appvar(enable_node_tagging, false),
+        enable_node_tagging = estatsd_utils:appvar(enable_node_tagging, false) andalso NodeTags > 0,
         node_tagging        = NodeTagging,
         cluster_tagging     = ClusterTagging
     }.
@@ -129,7 +130,7 @@ handle_cast(flush, State = #state{aggregate = Aggregate, stats_tables = {Current
     % 3. Gather data
     All     = get_counters(CurrentStats, State),
     Gauges  = get_gauges(CurrentGauge, State),
-    Timers  = get_timers(CurrentTimer, State), % Timers are a duplicate bag
+    Timers  = get_timers(CurrentTimer, State),
     VM      = get_vm_metrics(Aggregate, State),
 
     % 4. Do reports
@@ -152,11 +153,13 @@ handle_cast(flush, State = #state{aggregate = Aggregate, stats_tables = {Current
     {noreply, NewState}.
 
 handle_leader_cast({aggregate, Counters, Timers, Gauges, VMs}, State = #state{aggregate = Aggregate}, _Election) ->
-    lists:foreach(fun({K, V}) -> estatsd_utils:ets_incr(statsd_counters_agg, K, V) end, Counters),
-    lists:foreach(fun(Gauge) -> ets:insert(statsd_gauge_agg, Gauge) end, Gauges),
-    CurrentTimers = ets:tab2list(statsd_timer_agg),
-    UpdatedTimers = lists:foldl(fun merge_accumulation/2, CurrentTimers, Timers),
-    lists:foreach(fun(Timer) -> ets:insert(statsd_timer_agg, Timer) end, UpdatedTimers),
+    spawn(fun() ->
+                lists:foreach(fun({K, V}) -> estatsd_utils:ets_incr(statsd_counters_agg, K, V) end, Counters),
+                lists:foreach(fun(Gauge) -> ets:insert(statsd_gauge_agg, Gauge) end, Gauges),
+                CurrentTimers = ets:tab2list(statsd_timer_agg),
+                UpdatedTimers = lists:foldl(fun merge_accumulation/2, CurrentTimers, Timers),
+                lists:foreach(fun(Timer) -> ets:insert(statsd_timer_agg, Timer) end, UpdatedTimers)
+        end),
     {noreply, State#state{aggregate = Aggregate ++ VMs}};
 handle_leader_cast(_Cast, State, _Election) ->
     {noreply, State}.
@@ -185,8 +188,6 @@ terminate(_, _) ->
 %% INTERNAL STUFF
 get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
     [ {key2str(K),V} || {K,V} <- ets:tab2list(Tid) ];
-get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
-    [ {key2str(K),V} || {K,V} <- ets:tab2list(Tid) ];
 get_counters(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
     tag_metrics(ets:tab2list(Tid), NodeTagging);
 get_counters(Tid, State = #state{is_leader = true}) ->
@@ -197,11 +198,10 @@ get_counters(Tid, State = #state{is_leader = true}) ->
     Counters.
 
 get_timers(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
-    [ {key2str(K),V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
-get_timers(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
-    [ {key2str(K),V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
-get_timers(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
-    tag_metrics(accumulate(ets:tab2list(Tid)), NodeTagging);
+    accumulate_timers(ets:tab2list(Tid));
+get_timers(Tid, State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
+    Timers = get_timers(Tid, State#state{enable_node_tagging = false}),
+    tag_metrics(Timers, NodeTagging);
 get_timers(Tid, State = #state{is_leader = true}) ->
     LocalTimers = get_timers(Tid, State#state{is_leader = false}),
     Timers = ets:tab2list(statsd_timer_agg),
@@ -215,8 +215,6 @@ merge_accumulation({K, Values}, Acc) ->
     end.
 
 get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
-    [ {key2str(K), V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
-get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
     [ {key2str(K), V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
 get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
     tag_metrics(accumulate(ets:tab2list(Tid)), NodeTagging);
@@ -264,6 +262,16 @@ do_accumulate({Key, Value}, L) ->
         {Key, Values} ->
             lists:keystore(Key, 1, L, {Key, [Value|Values]})
     end.
+
+accumulate_timers(List) ->
+    [ {key2str(Key), dict:to_list(Values)} || {Key, Values} <- dict:to_list(lists:foldl(fun do_accumulate_timers/2, dict:new(), List)) ].
+
+do_accumulate_timers({{Key, Dur}, C}, Timers) ->
+    dict:update(Key, fun(Durations) ->
+                dict:update(Dur, fun(Count) ->
+                            Count + C
+                    end, C, Durations)
+        end, dict:from_list([{Dur,C}]), Timers).
 
 send_to_graphite(Msg, GraphiteHost, GraphitePort) ->
     case gen_tcp:connect(GraphiteHost, GraphitePort, [list, {packet, 0}]) of
@@ -367,17 +375,15 @@ do_report_counters(TsStr, All, Duration) ->
 do_report_timers(TsStr, Timings) ->
     Msg = lists:foldl(
         fun({Key, Vals}, Acc) ->
-                KeyS = key2str(Key),
-                Values          = lists:sort(Vals),
-                Count           = length(Values),
-                Min             = hd(Values),
-                Max             = lists:last(Values),
+                KeyS            = key2str(Key),
+                Values          = lists:keysort(1, Vals),
+                {Min,_}         = hd(Values),
+                {Max,_}         = lists:last(Values),
+                Count           = get_timer_count(Vals),
                 PctThreshold    = 90,
                 ThresholdIndex  = erlang:round(((100-PctThreshold)/100)*Count),
                 NumInThreshold  = Count - ThresholdIndex,
-                Values1         = lists:sublist(Values, NumInThreshold),
-                MaxAtThreshold  = lists:nth(NumInThreshold, Values),
-                Mean            = lists:sum(Values1) / case NumInThreshold of 0 -> 1; _ -> NumInThreshold end,
+                {MaxAtThreshold, Mean} = get_timer_mean(Values, NumInThreshold),
                 %% Build stats string for graphite
                 Startl          = [ "stats.timers.", KeyS, "." ],
                 Endl            = [" ", TsStr, "\n"],
@@ -391,6 +397,26 @@ do_report_timers(TsStr, Timings) ->
                 [ Fragment | Acc ]
         end, [], Timings),
     {Msg, length(Msg)}.
+
+get_timer_count(Vals) ->
+    lists:foldl(fun({_Dur, C}, Acc) -> Acc + C end, 0, Vals).
+
+get_timer_mean(Vals, N) ->
+    {Max, Sum} = do_get_timer_mean(Vals, N, 0),
+    case N of
+        0 -> {Max, Sum};
+        _ -> {Max, Sum / N}
+    end.
+
+do_get_timer_mean([{Max,_}|_], 0, Sum) ->
+    {Max, Sum};
+do_get_timer_mean([{Dur, C}|T], Point, Acc) ->
+    case Point - C of
+        N when N > 0 -> do_get_timer_mean(T, N, Acc + (Dur * C));
+        N when N =< 0 -> do_get_timer_mean([{Dur, C + N}|T], 0, Acc + (Dur * (C + N)))
+    end;
+do_get_timer_mean([], _Point, _Sum) ->
+    exit(badarg).
 
 do_report_gauges(Gauges) ->
     Msg = lists:foldl(
