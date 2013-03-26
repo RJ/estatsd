@@ -1,7 +1,7 @@
 {application, estatsd,
  [
   {description, "Stats aggregation service that writes to graphite"},
-  {vsn, "1.2.0"},
+  {vsn, "1.2.1"},
   {registered, []},
   {applications, [
                   kernel,
