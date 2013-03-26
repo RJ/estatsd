@@ -23,7 +23,7 @@ loop(Socket, Transport, Buffer) ->
     case Transport:recv(Socket, 0, 5000) of
         {ok, Data} ->
             {Messages, NewBuffer} = get_messages([Buffer, Data]),
-            lists:foreach(fun estatsd_tcp_handler:handle_message/1, Messages),
+            lists:foreach(fun estatsd_tcp:handle_message/1, Messages),
             loop(Socket, Transport, NewBuffer);
         _ ->
             ok = Transport:close(Socket)

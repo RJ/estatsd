@@ -218,7 +218,7 @@ merge_accumulation({K, Values}, Acc) ->
 
 get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
     [ {key2str(K), V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
-get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = []}) ->
+get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = false}) ->
     [ {key2str(K), V} || {K,V} <- accumulate(ets:tab2list(Tid)) ];
 get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, node_tagging = NodeTagging}) ->
     tag_metrics(accumulate(ets:tab2list(Tid)), NodeTagging);
