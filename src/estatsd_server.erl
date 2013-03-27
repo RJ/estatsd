@@ -16,7 +16,7 @@
 
 -export([node_key/0,key2str/1]).%,flush/0]). %% export for debugging 
 
--export([init/1, handle_call/4, handle_cast/3, handle_info/2,
+-export([init/1, handle_call/4, handle_cast/3, handle_info/3,
          handle_leader_call/4, handle_leader_cast/3, handle_DOWN/3,
          elected/3, surrendered/3, from_leader/3, terminate/2,
          code_change/4]).
@@ -167,7 +167,7 @@ handle_call(_Call,_,State, _Election) ->
 handle_leader_call(_Call, _From, State, _Election) ->
     {reply, ok, State}.
 
-handle_info(_Msg, State) -> 
+handle_info(_Msg, State, _Election) -> 
     {noreply, State}.
 
 handle_DOWN(_Node, State, _Election) ->
