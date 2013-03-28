@@ -1,10 +1,71 @@
-estatsd is a simple stats aggregation service that periodically dumps data to
-Graphite: http://graphite.wikidot.com/
+ESTATSD
+==========
+StatsD, a tool developed by etsy to track statistics, has become incredibly popular in web services
+for its ease of use and its numerous appliactions. estatsd, a project initially created by Richard Jones,
+was an attempt to develop a StatsD server as an Erlang application for easy integration with other Erlang
+projects.
 
-NB: Graphite is good, despite the website being a bit ghetto.
+With 37 forks at the time of this writing, there's no shortage of usable variants of estatsd. What sets this one
+apart from the others is its emphasis on distribution and scalability.
 
-Inspired heavily by etsy statsd:
-http://codeascraft.etsy.com/2011/02/15/measure-anything-measure-everything/
+This flavor of estatsd is designed to run on multiple systems within a local network, across datacenters, as
+a single embedded application, or a standalone UDP server. This allows you to *horizontally scale* your statsd 
+setup with the rest of your service.
+
+HOW IT WORKS
+==========
+estatsd works on the concept of a cluster, or a local network, and uses Erlang's built-in support for distribrution
+towards this end. Data being tracked by servers in the cluster is aggregated to a single, elected server (using
+gen_leader; this election process makes the service more resilient in the case of network or server failure), and
+is then sent on to its destination.
+
+estatsd supports 3 types of destinations now and can easily be extended to target more. The types are:
+
+1) graphite (of course) - The standard StatsD/estatsd endpoint
+2) estatsd_tcp          - A JSON-based aggregation protocol
+3) estatsd_tcpz         - Similar to estatsd_tcp, but also uses zlib to compress messages when sending
+
+Using the estatsd_tcp and estatsd_tcpz protocols you can easily aggregate statistics from multiple datcenters into
+a single graphite instance without the increased risk of lost messages that comes with UDP-repeater setups.
+
+AND THERE'S MORE
+=========
+Tagging. You can apply arbitrary tags to keys (based on a regular expression) at two points: the node level, before
+the stats are aggregated to the local network's master, or the cluster level, before the stats are forwarded to the
+specified destination.
+
+That's a little vague, so here's an example:
+
+    % /etc/estatsd/cluster.config
+    [
+        {estatsd, [
+                {cluster_tagging, [
+                            {".*", copy, prefix, "my_dc_a"},
+                            {".*", replace, prefix, "my_product"}
+                    ]}
+            ]}
+    ]
+
+Suppose you have a statistic, foo, that you're tracking. When estatsd sends this data on to its destination, you'll
+receive two metrics instead of one.
+
+    my_product.my_dc_a.foo      27
+    my_product.foo              27
+
+Suppose you had another datacenter, my_dc_b, that was also sending data, but with the tag my_dc_b. You'll receive two
+two metrics again.
+
+    my_product.my_dc_b.foo      23
+    my_product.foo              23
+
+See where I'm going with this yet? Assuming that your destination is another estatsd instance, these stats will be
+aggregated, and you'll be left with *3* keys:
+
+    my_product.my_dc_a.foo      27
+    my_product.my_dc_b.foo      23
+    my_product.foo              50
+
+Intrigued yet?
 
 QUICK DEMO
 ==========
@@ -60,14 +121,4 @@ Or for your convenience:
 
 
 
-NOTES
-=====
-
-This could be extended to take a callback for reporting mechanisms.
-Right now it's hardcoded to stick data into graphite.
-
-I've been running this since May 2011 in production for irccloud.
-
-
-Richard Jones <rj@metabrew.com>
-@metabrew
+Soup <fauxsoup@gmail.com>
