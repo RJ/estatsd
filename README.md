@@ -21,9 +21,9 @@ is then sent on to its destination.
 
 estatsd supports 3 types of destinations now and can easily be extended to target more. The types are:
 
-1) graphite (of course) - The standard StatsD/estatsd endpoint
-2) estatsd_tcp          - A JSON-based aggregation protocol
-3) estatsd_tcpz         - Similar to estatsd_tcp, but also uses zlib to compress messages when sending
+1. graphite (of course) - The standard StatsD/estatsd endpoint
+2. estatsd_tcp          - A JSON-based aggregation protocol
+3. estatsd_tcpz         - Similar to estatsd_tcp, but also uses zlib to compress messages when sending
 
 Using the estatsd_tcp and estatsd_tcpz protocols you can easily aggregate statistics from multiple datcenters into
 a single graphite instance without the increased risk of lost messages that comes with UDP-repeater setups.
@@ -70,13 +70,13 @@ Intrigued yet?
 QUICK DEMO
 ==========
 
-1) Install and configure graphite (quick-ish)
-2) Install rebar, have it in your path
-3) rebar compile
-4) erl -pa ebin
-5) > application:start(estatsd).
+1. Install and configure graphite (quick-ish)
+2. Install rebar, have it in your path
+3. rebar compile
+4. erl -pa ebin
+5. > application:start(estatsd).
    > estatsd:increment(foo, 123).
-6) Observe graphite now has 1 data point.
+6. Observe graphite now has 1 data point.
 
 STANDALONE SERVICE
 ==========
