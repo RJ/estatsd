@@ -24,7 +24,8 @@
                 graphite_host,      % graphite server host
                 graphite_port,      % graphite server port
                 vm_metrics,           % flag to enable sending VM metrics on flush
-                path_prefix         % graphite metrics path prefix
+                path_prefix,        % graphite metrics path prefix
+                tx_bytes            % number of bytes sent to graphite
                }).
 
 start_link(Options) ->
@@ -50,7 +51,8 @@ init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics, PathPrefix]) ->
                     graphite_host   = GraphiteHost,
                     graphite_port   = GraphitePort,
                     vm_metrics        = VmMetrics,
-                    path_prefix     = PathPrefix
+                    path_prefix     = PathPrefix,
+                    tx_bytes        = 0
                   },
     {ok, State}.
 
@@ -83,6 +85,10 @@ handle_cast({timing, Key, Duration}, State) ->
             {noreply, State#state{timers = gb_trees:update(Key, [Duration|Val], State#state.timers)}}
     end;
 
+handle_cast({tx_bytes, Bytes}, State) ->
+    New = State#state.tx_bytes + Bytes,
+    {noreply, State#state{tx_bytes=New}};
+
 handle_cast(flush, State) ->
     All = ets:tab2list(statsd),
     Gauges = ets:tab2list(statsdgauge),
@@ -111,6 +117,7 @@ send_to_graphite(Msg, State) ->
         {ok, Sock} ->
             gen_tcp:send(Sock, Msg),
             gen_tcp:close(Sock),
+            gen_server:cast(?MODULE, {tx_bytes, iolist_size(Msg)}),
             ok;
         E ->
             error_logger:error_msg("Failed to connect to graphite: ~p", [E]),
@@ -148,12 +155,22 @@ do_report(All, Gauges, State) ->
     case NumTimers + NumCounters + NumGauges + NumVmMetrics of
         0 -> nothing_to_report;
         NumStats ->
+            MsgEstatsd = lists:map(fun({Key, Val}) ->
+                        [
+                            State#state.path_prefix, ".estatsd.", key2str(Key), " ",
+                            io_lib:format("~w", [Val]), " ",
+                            TsStr, "\n"
+                        ]
+                end, [
+                    {num_stats, NumStats},
+                    {tx_bytes, State#state.tx_bytes}
+                ]),
             FinalMsg = [ MsgCounters,
                          MsgTimers,
                          MsgGauges,
                          MsgVmMetrics,
-                         %% Also graph the number of graphs we're graphing:
-                         State#state.path_prefix, ".num_stats ", num2str(NumStats), " ", TsStr, "\n"
+                         %% Also graph some estatsd stats!
+                         MsgEstatsd
                        ],
             send_to_graphite(FinalMsg, State)
     end.
