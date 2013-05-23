@@ -53,8 +53,9 @@ start() ->
 
 timing(Key, Fun) when is_function(Fun,0) ->
     Start = erlang:now(),
-    Fun(),
-    timing(Key, Start);
+    Return = Fun(),
+    timing(Key, Start),
+    Return;
 
 % Convenience: just give it the now() tuple when the work started
 timing(Key, StartTime = {_,_,_}) ->
