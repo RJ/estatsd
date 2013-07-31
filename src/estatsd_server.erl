@@ -15,6 +15,7 @@
 -include("estatsd.hrl").
 
 -export([node_key/0,key2str/1]).%,flush/0]). %% export for debugging 
+-export([get_segment_info/0]).
 
 -export([init/1, handle_call/4, handle_cast/3, handle_info/3,
          handle_leader_call/4, handle_leader_cast/3, handle_DOWN/3,
@@ -38,13 +39,29 @@
     }).
 
 start_link() ->
-    Nodes = case application:get_env(estatsd, peers) of
-        undefined -> [node()];
-        {ok, Peers} -> Peers
-    end,
-    gen_leader:start_link(?MODULE, Nodes, [], ?MODULE, [], [{spawn_opt, [{priority, high}]}]).
+    {ServerID, Segment} = get_segment_info(),
+    gen_leader:start_link(ServerID, Segment, [], ?MODULE, [], [{spawn_opt, [{priority, high}]}]).
 
-%%
+get_segment_info() ->
+    Nodes               = estatsd_utils:appvar(peers, [node()]),
+    SegmentSize         = estatsd_utils:appvar(segment_size, 24),
+    SegmentID           = select_segment(Nodes, SegmentSize),
+    Segment             = lists:sublist(Nodes, (SegmentID * SegmentSize) + 1, SegmentSize),
+    ServerID            = list_to_atom("estatsd_server-" ++ integer_to_list(SegmentID)),
+    {ServerID, Segment}.
+
+select_segment(Nodes, Size) ->
+    select_segment(node(), Nodes, Size, 1, 0).
+
+select_segment(Self, [Self|_Nodes], _Size, _Index, SegmentID) ->
+    SegmentID;
+select_segment(Self, [_Node|Nodes], Size, Size, SegmentID) ->
+    select_segment(Self, Nodes, Size, 1, SegmentID + 1);
+select_segment(Self, [_Node|Nodes], Size, Index, SegmentID) ->
+    select_segment(Self, Nodes, Size, Index + 1, SegmentID);
+select_segment(Self, [], _Size, _Index, _SegmentID) ->
+    error_logger:error_msg("~p not in nodes!", [Self]),
+    exit(badarg).
 
 init([]) ->
     % 1. Initialize our state.
@@ -73,7 +90,7 @@ init([]) ->
     ets:insert(statsd, {timer, TidTimerA}),
 
     % 5. Set a timer to flush stats
-    {ok, Tref} = timer:apply_interval(FlushInterval, gen_leader, cast, [?MODULE, flush]),
+    {ok, Tref} = timer:apply_interval(FlushInterval, gen_leader, cast, [self(), flush]),
 
     {ok, State#state{
             flush_timer     = Tref,

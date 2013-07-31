@@ -22,7 +22,8 @@ aggregate(Counters, Timers, Gauges) ->
     aggregate(Counters, Timers, Gauges, []).
 
 aggregate(Counters, Timers, Gauges, VM) ->
-    gen_leader:leader_cast(estatsd_server, {aggregate, Counters, Timers, Gauges, VM}).
+    {ServerID, _Segment} = estatsd_server:get_segment_info(),
+    gen_leader:leader_cast(ServerID, {aggregate, Counters, Timers, Gauges, VM}).
     
 timing(Key, StartTime = {_,_,_}) ->
     Dur = erlang:round(timer:now_diff(os:timestamp(), StartTime)/1000),
