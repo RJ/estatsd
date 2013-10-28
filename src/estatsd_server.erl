@@ -14,7 +14,7 @@
 -export([start_link/0]).
 -include("estatsd.hrl").
 
--export([node_key/0,key2str/1]).%,flush/0]). %% export for debugging 
+-export([node_key/0,key2str/1]).%,flush/0]). %% export for debugging
 -export([get_segment_info/0]).
 
 -export([init/1, handle_call/4, handle_cast/3, handle_info/3,
@@ -102,7 +102,7 @@ init([]) ->
 init_state() ->
     NodeTagging     = parse_tagging(estatsd_utils:appvar(node_tagging, [])),
     ClusterTagging  = parse_tagging(estatsd_utils:appvar(cluster_tagging, [])),
-    #state{ 
+    #state{
         flush_interval      = estatsd_utils:appvar(flush_interval, 10000),
         destination         = estatsd_utils:appvar(destination,  {graphite, "127.0.0.1", 2003}),
         vm_metrics          = estatsd_utils:appvar(vm_metrics,  false),
@@ -162,8 +162,8 @@ handle_cast(flush, State = #state{aggregate = Aggregate, stats_tables = {Current
     NewState = State#state{
         last_flush      = CurrTime,                     % Also, update the last flush so our calculations are, you know, accurate.
         aggregate       = [],
-        stats_tables    = {NewStats, CurrentStats}, 
-        gauge_tables    = {NewGauge, CurrentGauge}, 
+        stats_tables    = {NewStats, CurrentStats},
+        gauge_tables    = {NewGauge, CurrentGauge},
         timer_tables    = {NewTimer, CurrentTimer}
     },
     {noreply, NewState}.
@@ -178,13 +178,13 @@ handle_leader_cast({aggregate, Counters, Timers, Gauges, VMs}, State = #state{ag
 handle_leader_cast(_Cast, State, _Election) ->
     {noreply, State}.
 
-handle_call(_Call,_,State, _Election) -> 
+handle_call(_Call,_,State, _Election) ->
     {reply, ok, State}.
 
 handle_leader_call(_Call, _From, State, _Election) ->
     {reply, ok, State}.
 
-handle_info(_Msg, State, _Election) -> 
+handle_info(_Msg, State, _Election) ->
     {noreply, State}.
 
 handle_DOWN(_Node, State, _Election) ->
@@ -193,10 +193,10 @@ handle_DOWN(_Node, State, _Election) ->
 from_leader(_Synch, State, _Election) ->
     {ok, State}.
 
-code_change(_, _, State, _Election) -> 
+code_change(_, _, State, _Election) ->
     {noreply, State}.
 
-terminate(_, _) -> 
+terminate(_, _) ->
     ok.
 
 %% INTERNAL STUFF
@@ -226,7 +226,7 @@ get_timers(Tid, State = #state{is_leader = true}) ->
     Timers = accumulate_timers(ets:tab2list(statsd_timer_agg)),
     ets:delete_all_objects(statsd_timer_agg),
     Timers.
-    
+
 merge_accumulation({K, Values}, Acc) ->
     case lists:keyfind(K, 1, Acc) of
         false -> [{K, Values}|Acc];
@@ -302,9 +302,9 @@ send_to_graphite(Msg, GraphiteHost, GraphitePort) ->
     end.
 
 % this string munging is damn ugly compared to javascript :(
-key2str(K) when is_atom(K) -> 
+key2str(K) when is_atom(K) ->
     atom_to_list(K);
-key2str(K) when is_binary(K) -> 
+key2str(K) when is_binary(K) ->
     key2str(binary_to_list(K));
 key2str(K) when is_list(K) ->
     Opts = [global, {return, list}],
@@ -327,7 +327,7 @@ do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, de
     {MsgVmMetrics, NumVmMetrics}    = do_report_vm_metrics(VM, TsStr, State),
     %% REPORT TO GRAPHITE
     case NumTimers + NumCounters + NumGauges + NumVmMetrics of
-        0 -> 
+        0 ->
             nothing_to_report;
         NumStats ->
             FinalMsg = [ MsgCounters,
@@ -377,15 +377,15 @@ do_report_counters(TsStr, All, Duration) ->
                         KeyS = key2str(Key),
                         Val = Val0 / Duration,
                         %% Build stats string for graphite
-                        Fragment = [ "stats.", KeyS, " ", 
-                                     io_lib:format("~w", [Val]), " ", 
+                        Fragment = [ "stats.", KeyS, " ",
+                                     io_lib:format("~w", [Val]), " ",
                                      TsStr, "\n",
 
-                                     "stats_counts.", KeyS, " ", 
-                                     io_lib:format("~w",[Val0]), " ", 
+                                     "stats_counts.", KeyS, " ",
+                                     io_lib:format("~w",[Val0]), " ",
                                      TsStr, "\n"
                                    ],
-                        [ Fragment | Acc ]                    
+                        [ Fragment | Acc ]
                 end, [], All),
     {Msg, length(All)}.
 
