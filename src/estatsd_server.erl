@@ -241,7 +241,7 @@ get_gauges(Tid, _State = #state{is_leader = false, enable_node_tagging = true, n
     tag_metrics(accumulate(ets:tab2list(Tid)), NodeTagging);
 get_gauges(Tid, State = #state{is_leader = true}) ->
     LocalGauges = get_gauges(Tid, State#state{is_leader = false}),
-    Gauges = accumulate(ets:tab2list(statsd_gauge_agg)),
+    Gauges = ets:tab2list(statsd_gauge_agg),
     ets:delete_all_objects(statsd_gauge_agg),
     lists:foldl(fun merge_accumulation/2, Gauges, LocalGauges).
 
@@ -274,15 +274,10 @@ get_local_metrics() ->
     {StatsData, MemoryData}.
 
 accumulate(List) ->
-    lists:foldl(fun do_accumulate/2, [], List).
+    dict:to_list(lists:foldl(fun do_accumulate/2, dict:new(), List)).
 
-do_accumulate({Key, Value}, L) ->
-    case lists:keyfind(Key, 1, L) of
-        false -> 
-            [{Key, [Value]}|L];
-        {Key, Values} ->
-            lists:keystore(Key, 1, L, {Key, [Value|Values]})
-    end.
+do_accumulate({Key, Value}, D) ->
+    dict:update(Key, fun(Values) -> [Value|Values] end, [Value], D).
 
 accumulate_timers(List) ->
     Res =[ {key2str(Key), dict:to_list(Values)} || {Key, Values} <- dict:to_list(lists:foldl(fun do_accumulate_timers/2, dict:new(), List)) ],
