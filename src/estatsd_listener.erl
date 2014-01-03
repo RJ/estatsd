@@ -57,6 +57,8 @@ parse_value(Key, Value) ->
     case re:split(Value, ?COMPILE_ONCE("\\|"), [{return, list}, trim]) of
         [N, "ms"] ->
             estatsd:timing(Key, list_to_integer(N));
+        [N, "ms", [$@|Sample]] ->
+            estatsd:timing(Key, list_to_integer(N), trunc(1 / parse_float(Sample)));
         [N, "g"] ->
             estatsd:gauge(Key, list_to_integer(N));
         [N, "c"] ->

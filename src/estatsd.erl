@@ -5,7 +5,7 @@
          gauge/2,
          increment/1, increment/2, increment/3,
          decrement/1, decrement/2, decrement/3,
-         timing/2,
+         timing/2, timing/3,
          timing_fun/2, timing_fun/3,
          timing_call/3, timing_call/4, timing_call/5
         ]).
@@ -30,10 +30,13 @@ timing(Key, StartTime = {_,_,_}) ->
     timing(Key,Dur);
 
 timing(Key, Duration) when is_integer(Duration) -> 
-    Tid = get_table(timer),
-    estatsd_utils:ets_incr(Tid, {Key, Duration}, 1);
+    timing(Key, Duration, 1);
 timing(Key, Duration) -> 
     timing(Key, round(Duration)).
+
+timing(Key, Duration, Count) ->
+    Tid = get_table(timer),
+    estatsd_utils:ets_incr(Tid, {Key, Duration}, Count).
 
 %% @doc Calculates the duration of applying Fun and feeds the
 %% result into graphite as a timing.
