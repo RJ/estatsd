@@ -1,5 +1,5 @@
-ebin
 .*
+*.app
 *.beam
 *~
 erl_crash.dump
