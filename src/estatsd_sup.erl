@@ -12,7 +12,7 @@
 -define(GRAPHITE_HOST,  appvar(graphite_host,  "127.0.0.1")).
 -define(GRAPHITE_PORT,  appvar(graphite_port,  2003)).
 -define(VM_METRICS,     appvar(vm_metrics,  true)).
--define(PATH_PREFIX,    appvar(path_prefix,  "stats")).
+-define(PATH_PREFIX,    appvar(path_prefix,  default_path_prefix())).
 
 %% ===================================================================
 %% API functions
@@ -51,4 +51,14 @@ appvar(K, Def) ->
     case application:get_env(estatsd, K) of
         {ok, Val} -> Val;
         undefined -> Def
+    end.
+
+
+default_path_prefix() ->
+    case node() of
+        nonode@nohost -> "stats";
+        Node ->
+            [Name, Host] = string:tokens(atom_to_list(Node), "@"),
+            HostNoDots = re:replace(Host, "\\.", "_", [global, {return,list}]),
+            estatsd_server:key2str(Name) ++ "." ++ estatsd_server:key2str(HostNoDots)
     end.

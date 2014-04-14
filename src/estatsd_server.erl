@@ -11,9 +11,9 @@
 -module(estatsd_server).
 -behaviour(gen_server).
 
--export([start_link/1]).
+-export([start_link/1, key2str/1]).
 
-%-export([key2str/1,flush/0]). %% export for debugging 
+%-export([flush/0]). %% export for debugging 
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
          terminate/2, code_change/3]).
@@ -245,7 +245,6 @@ do_report_gauges(Gauges, State) ->
 do_report_vm_metrics(TsStr, State) ->
     case State#state.vm_metrics of
         true ->
-            NodeKey = node_key(),
             {TotalReductions, Reductions} = erlang:statistics(reductions),
             {NumberOfGCs, WordsReclaimed, _} = erlang:statistics(garbage_collection),
             {{input, Input}, {output, Output}} = erlang:statistics(io),
@@ -262,14 +261,14 @@ do_report_vm_metrics(TsStr, State) ->
                         ],
             StatsMsg = lists:map(fun({Key, Val}) ->
                 [
-                 State#state.path_prefix, ".vm.", NodeKey, ".stats.", key2str(Key), " ",
+                 State#state.path_prefix, ".vm.stats.", key2str(Key), " ",
                  io_lib:format("~w", [Val]), " ",
                  TsStr, "\n"
                 ]
             end, StatsData),
             MemoryMsg = lists:map(fun({Key, Val}) ->
                 [
-                 State#state.path_prefix, ".vm.", NodeKey, ".memory.", key2str(Key), " ",
+                 State#state.path_prefix, ".vm.memory.", key2str(Key), " ",
                  io_lib:format("~w", [Val]), " ",
                  TsStr, "\n"
                 ]
@@ -279,10 +278,3 @@ do_report_vm_metrics(TsStr, State) ->
             Msg = []
     end,
     {Msg, length(Msg)}.
-
-node_key() ->
-    NodeList = atom_to_list(node()),
-    {ok, R} = re:compile("[\@\.]"),
-    Opts = [global, {return, list}],
-    S = re:replace(NodeList,  R, "_", Opts),
-    key2str(S).
