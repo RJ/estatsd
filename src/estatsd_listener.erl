@@ -47,7 +47,7 @@ parse_packet(Packet) ->
 
 parse_metric(Metric) ->
     case re:split(Metric, ?COMPILE_ONCE(":"), [{return, list}]) of
-        [Key] -> 
+        [Key] ->
             estatsd:increment(Key);
         [Key|Values] ->
             lists:foreach(fun(Value) -> parse_value(Key, Value) end, Values)
@@ -56,11 +56,11 @@ parse_metric(Metric) ->
 parse_value(Key, Value) ->
     case re:split(Value, ?COMPILE_ONCE("\\|"), [{return, list}, trim]) of
         [N, "ms"] ->
-            estatsd:timing(Key, list_to_integer(N));
+            estatsd:timing(Key, parse_float(N));
         [N, "ms", [$@|Sample]] ->
-            estatsd:timing(Key, list_to_integer(N), trunc(1 / parse_float(Sample)));
+            estatsd:timing(Key, parse_float(N), trunc(1 / parse_float(Sample)));
         [N, "g"] ->
-            estatsd:gauge(Key, list_to_integer(N));
+            estatsd:gauge(Key, parse_float(N));
         [N, "c"] ->
             estatsd:increment(Key, list_to_integer(N));
         [N, "c", [$@|Sample]] ->
