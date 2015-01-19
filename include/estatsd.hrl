@@ -1,0 +1,4 @@
+-ifndef(ESTATSD_H).
+-define(ESTATSD_H, 1).
+-define(COMPILE_ONCE(RX), ct_expand:term((fun() -> {ok, Compiled} = re:compile(RX), Compiled end)())).
+-endif.

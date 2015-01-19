@@ -1,11 +1,13 @@
 {application, estatsd,
  [
   {description, "Stats aggregation service that writes to graphite"},
-  {vsn, "1.0"},
+  {vsn, "1.3.5"},
   {registered, []},
   {applications, [
                   kernel,
-                  stdlib
+                  stdlib,
+                  ranch,
+                  ibrowse
                  ]},
   {mod, { estatsd_app, []}},
   {env, []}
