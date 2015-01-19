@@ -193,7 +193,7 @@ handle_DOWN(_Node, State, _Election) ->
 from_leader(_Synch, State, _Election) ->
     {ok, State}.
 
-code_change(_Either, OldState, _Extra) ->
+code_change(_Either, OldState, _Extra, _Election) ->
     NewState    = init_state(),
     NewState2   = NewState#state{
         flush_timer     = OldState#state.flush_timer,
@@ -362,7 +362,7 @@ do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, de
                          %% Also graph the number of graphs we're graphing:
                          "statsd.num_stats ", estatsd_utils:num_to_str(NumStats), " ", TsStr, "\n"
                        ],
-            spawn(fun() -> send_to_graphite(Mode, FinalMsg, GraphiteHost, GraphitePort) end),
+            spawn(fun() -> send_to_graphite(Mode, FinalMsg, GraphiteHost, GraphitePort) end)
     end;
 %% TODO: Make everything below this point less atrocious.
 do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = true, destination = Destination}) ->
