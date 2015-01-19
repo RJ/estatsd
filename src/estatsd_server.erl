@@ -193,8 +193,16 @@ handle_DOWN(_Node, State, _Election) ->
 from_leader(_Synch, State, _Election) ->
     {ok, State}.
 
-code_change(_, _, State, _Election) ->
-    {noreply, State}.
+code_change(_Either, OldState, _Extra) ->
+    NewState    = init_state(),
+    NewState2   = NewState#state{
+        flush_timer     = OldState#state.flush_timer,
+        stats_tables    = OldState#state.stats_tables,
+        gauge_tables    = OldState#state.gauge_tables,
+        timer_tables    = OldState#state.timer_tables
+    },
+    {ok, NewState2}.
+
 
 terminate(_, _) ->
     ok.
@@ -290,7 +298,7 @@ do_accumulate_timers({{Key, Dur}, C}, Timers) ->
                     end, C, Durations)
         end, dict:from_list([{Dur,C}]), Timers).
 
-send_to_graphite(Msg, GraphiteHost, GraphitePort) ->
+send_to_graphite(graphite, Msg, GraphiteHost, GraphitePort) ->
     case gen_tcp:connect(GraphiteHost, GraphitePort, [list, {packet, 0}]) of
         {ok, Sock} ->
             gen_tcp:send(Sock, Msg),
@@ -299,6 +307,23 @@ send_to_graphite(Msg, GraphiteHost, GraphitePort) ->
         E ->
 %            error_logger:error_msg("Failed to connect to graphite: ~p", [E]),
             E
+    end;
+send_to_graphite(graphite_http, Msg, GraphiteHost, MaxRetries) when MaxRetries > 0 ->
+    case get(starting_retries) of
+        undefined ->
+            Starting = MaxRetries,
+            put(starting_retries, MaxRetries);
+        Starting ->
+            ok
+    end,
+    case ibrowse:send_req(GraphiteHost, [], post, Msg, []) of
+        {ok, "2" ++ _Status, _Headers, _Body} ->
+            %% 2XX response codes indicate success
+            erase(starting_retries),
+            ok;
+        _ ->
+            timer:sleep(50 * (1 bsl (Starting - MaxRetries))),
+            send_to_graphite(graphite_http, Msg, GraphiteHost, MaxRetries - 1)
     end.
 
 % this string munging is damn ugly compared to javascript :(
@@ -317,7 +342,7 @@ key2str(K) when is_list(K) ->
 do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, cluster_tagging = ClusterTagging = [_|_]}) ->
     {All1, Timers1, Gauges1} = tag_metrics({All, Timers, Gauges}, ClusterTagging),
     do_report(All1, Timers1, Gauges1, VM, CurrTime, State#state{cluster_tagging = []});
-do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, destination = {graphite, GraphiteHost, GraphitePort}}) ->
+do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, destination = {Mode, GraphiteHost, GraphitePort}}) when Mode == graphite; Mode == graphite_http ->
     % One time stamp string used in all stats lines:
     Duration                        = timer:now_diff(CurrTime, State#state.last_flush) / 1000000,
     TsStr                           = estatsd_utils:num_to_str(estatsd_utils:unixtime(CurrTime)),
@@ -337,13 +362,13 @@ do_report(All, Timers, Gauges, VM, CurrTime, State = #state{is_leader = true, de
                          %% Also graph the number of graphs we're graphing:
                          "statsd.num_stats ", estatsd_utils:num_to_str(NumStats), " ", TsStr, "\n"
                        ],
-            send_to_graphite(FinalMsg, GraphiteHost, GraphitePort)
+            spawn(fun() -> send_to_graphite(Mode, FinalMsg, GraphiteHost, GraphitePort) end),
     end;
 %% TODO: Make everything below this point less atrocious.
 do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = true, destination = Destination}) ->
-    estatsd_tcp:send(Destination, All, Timers, Gauges, VM);
+    spawn(fun() -> estatsd_tcp:send(Destination, All, Timers, Gauges, VM) end);
 do_report(All, Timers, Gauges, VM, _CurrTime, _State = #state{is_leader = false}) ->
-    estatsd:aggregate(All, Timers, Gauges, VM).
+    spawn(fun() -> estatsd:aggregate(All, Timers, Gauges, VM) end).
 
 tag_metrics(Metrics, Tags) when is_list(Metrics) ->
     lists:foldl(fun apply_tags/2, Metrics, Tags);
