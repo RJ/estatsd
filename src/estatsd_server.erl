@@ -113,8 +113,9 @@ send_to_graphite(Msg, State) ->
     %error_logger:info_msg("estatsd tx ~s\n", [Msg]),
     case gen_tcp:connect(State#state.graphite_host,
                          State#state.graphite_port,
-                         [list, {packet, 0}]) of
+                         [list, {packet, 0}], 60000) of
         {ok, Sock} ->
+            inet:setopts(Sock,[{send_timeout, 120000}]),
             gen_tcp:send(Sock, Msg),
             gen_tcp:close(Sock),
             gen_server:cast(?MODULE, {tx_bytes, iolist_size(Msg)}),
