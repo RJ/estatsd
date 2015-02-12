@@ -3,7 +3,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_link/1, start_link/3]).
+-export([start_link/0, start_link/1]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -12,6 +12,7 @@
 -define(GRAPHITE_HOST,  appvar(graphite_host,  "127.0.0.1")).
 -define(GRAPHITE_PORT,  appvar(graphite_port,  2003)).
 -define(VM_METRICS,     appvar(vm_metrics,  true)).
+-define(PATH_PREFIX,    appvar(path_prefix,  default_path_prefix())).
 
 %% ===================================================================
 %% API functions
@@ -19,28 +20,29 @@
 
 
 start_link() ->
-    start_link( ?FLUSH_INTERVAL, ?GRAPHITE_HOST, ?GRAPHITE_PORT, ?VM_METRICS).
+    start_link([]).
 
-start_link(FlushIntervalMs) ->
-    start_link( FlushIntervalMs, ?GRAPHITE_HOST, ?GRAPHITE_PORT, ?VM_METRICS).
-
-start_link(FlushIntervalMs, GraphiteHost, GraphitePort) ->
-    start_link( FlushIntervalMs, GraphiteHost, GraphitePort, ?VM_METRICS).
-
-start_link(FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics) ->
+start_link(Options) ->
     supervisor:start_link({local, ?MODULE}, 
                           ?MODULE, 
-                          [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]).
+                          [Options]).
 
 %% ===================================================================
 %% Supervisor callbacks
 %% ===================================================================
 
-init([FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]) ->
+init([Options]) ->
+    Config = [
+        proplists:get_value(flush_interval, Options, ?FLUSH_INTERVAL),
+        proplists:get_value(graphite_host,  Options, ?GRAPHITE_HOST),
+        proplists:get_value(graphite_port,  Options, ?GRAPHITE_PORT),
+        proplists:get_value(vm_metrics,     Options, ?VM_METRICS),
+        proplists:get_value(path_prefix,    Options, ?PATH_PREFIX)
+    ],
+
     Children = [
         {estatsd_server, 
-         {estatsd_server, start_link, 
-             [FlushIntervalMs, GraphiteHost, GraphitePort, VmMetrics]},
+         {estatsd_server, start_link, [Config]},
          permanent, 5000, worker, [estatsd_server]}
     ],
     {ok, { {one_for_one, 10000, 10}, Children} }.
@@ -49,4 +51,14 @@ appvar(K, Def) ->
     case application:get_env(estatsd, K) of
         {ok, Val} -> Val;
         undefined -> Def
+    end.
+
+
+default_path_prefix() ->
+    case node() of
+        nonode@nohost -> "stats";
+        Node ->
+            [Name, Host] = string:tokens(atom_to_list(Node), "@"),
+            HostNoDots = re:replace(Host, "\\.", "_", [global, {return,list}]),
+            estatsd_server:key2str(Name) ++ "." ++ estatsd_server:key2str(HostNoDots)
     end.
